@@ -1,0 +1,24 @@
+# Node
+node_modules/
+dist/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# OS
+.DS_Store
+
+# Misc
+reference/
+venv/
+docs/
+
+# mod-tools build artifacts
+mod-tools/build*/
+mod-tools/target/
+
+*.sh
+.claude
+*.todo

@@ -22,8 +22,8 @@ into `~/Library/Application Support/com.onlyleague.onlyskinz/overlay/`. The
 injector's `fopen` hook redirects every `*.client` read to that directory. If the
 overlay was built *before* a game patch, the game reads an old WAD → WAD mount
 fails → `WadFileMountError` → crash. Riot then writes a `SOFT_REPAIR` marker.
-(OnlySkinz 0.1.13+ stamps the overlay with the build it was made for and refuses
-to inject a stale one — see §8.)
+(OnlySkinz builds after 0.1.12 stamp the overlay with the build they were made
+for and refuse to inject a stale one — see §8.)
 
 **(b) Corrupted install-local patch DB.** The repair needs `Contents/LoL/Game.db`
 to reconcile the install. If that SQLite DB is malformed, the repair dies with

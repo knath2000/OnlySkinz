@@ -293,8 +293,34 @@ auto patcher::run(std::function<void(Message, char const*)> update,
     auto ctx = Context{};
     ctx.set_prefix(profile_path);
     (void)config_path;
-    (void)game_path;
-    (void)opts;
+    auto const scan_only = opts == "scan-only";
+    auto const wad_only = opts == "wad-verify-only";
+    auto const fopen_only = opts == "fopen-only";
+
+    // Refuse to inject when the game was patched after the overlay was built: the
+    // overlay's WADs no longer match this build, and serving them makes the
+    // client fail the mount, write SOFT_REPAIR, and trigger a repair loop.
+    // Checked once here (so a patch that already landed fails immediately) and
+    // again per launch (so a patch that lands while we wait for the game does
+    // not slip through).
+    auto const stamped_build = read_build_stamp(profile_path);
+    auto const overlay_stale = [&]() -> bool {
+        if (scan_only || stamped_build.empty()) return false;
+        auto const current_build = game_build_id(game_path);
+        if (current_build.empty() || current_build == stamped_build) return false;
+        patch_log(
+            "overlay is stale: built for %s, game is %s - refusing to patch",
+            stamped_build.c_str(),
+            current_build.c_str());
+        update(M_STALE_OVERLAY, "");
+        return true;
+    };
+
+    if (overlay_stale()) {
+        throw PatcherStaleOverlay(
+            "Game was updated since these skins were applied; re-apply your skins.");
+    }
+
     for (;;) {
         auto pid = Process::FindPid("/LeagueofLegends");
         if (!pid) {
@@ -313,10 +339,12 @@ auto patcher::run(std::function<void(Message, char const*)> update,
             update(M_SCAN, "");
             ctx.scan(process);
 
-            auto const scan_only = opts == "scan-only";
-            auto const wad_only = opts == "wad-verify-only";
-            auto const fopen_only = opts == "fopen-only";
             if (!scan_only) {
+                if (overlay_stale()) {
+                    throw PatcherStaleOverlay(
+                        "Game was updated since these skins were applied; re-apply your skins.");
+                }
+
                 update(M_PATCH, "");
                 process.Suspend();
                 {
@@ -337,6 +365,11 @@ auto patcher::run(std::function<void(Message, char const*)> update,
                 []() -> bool { throw PatcherTimeout(std::string("Timed out exit")); });
 
             update(M_DONE, "");
+        } catch (PatcherStaleOverlay const&) {
+            // The overlay was built for a different game build. Injecting it
+            // would make the client fail the WAD mount and trigger a repair, and
+            // retrying would only spam the UI. Propagate so runoverlay stops.
+            throw;
         } catch (std::exception const& error) {
             patch_log("pid=%u patch attempt failed: %s", pid, error.what());
             sleep_ms(1000);

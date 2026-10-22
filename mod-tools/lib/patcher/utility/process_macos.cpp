@@ -212,7 +212,7 @@ auto Process::AllocateMemory(size_t size) const -> void* {
     return (void*)address;
 }
 
-// Patcher diagnostics go to stderr, which Zushi already captures and echoes.
+// Patcher diagnostics go to stderr, which OnlySkinz already captures and echoes.
 void lol::patcher::patch_log(char const* fmt, ...) noexcept {
     std::fprintf(stderr, "[patcher] ");
     va_list args;

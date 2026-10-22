@@ -1,7 +1,7 @@
 use crate::state::{AppState, AppStatus};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 const DEFAULT_GAME_PATH: &str = "/Applications/League of Legends.app/Contents/LoL/Game";
 
@@ -36,13 +36,20 @@ fn resolve_game_path(raw: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn detect_game_path(state: State<'_, Arc<Mutex<AppState>>>) -> Result<Option<String>, String> {
+pub fn detect_game_path(
+    app: AppHandle,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Option<String>, String> {
     if is_valid_game_dir(DEFAULT_GAME_PATH) {
         let path = Path::new(DEFAULT_GAME_PATH)
             .canonicalize()
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .to_string();
+
+        // Drop any overlay left over from a previous session that no longer
+        // matches this install, so it cannot be served to the game.
+        crate::commands::patcher::sweep_stale_overlay_for(&app, &path);
 
         let mut app_state = state.lock().map_err(|e| e.to_string())?;
         app_state.game_path = Some(path.clone());
@@ -61,9 +68,17 @@ pub fn validate_game_path(path: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub fn set_game_path(path: String, state: State<'_, Arc<Mutex<AppState>>>) -> Result<(), String> {
+pub fn set_game_path(
+    app: AppHandle,
+    path: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
     let validated = resolve_game_path(&path)
         .ok_or_else(|| "Invalid game path: LeagueofLegends.app not found".to_string())?;
+
+    // The user may have just switched installs; an overlay built for the old one
+    // must not survive.
+    crate::commands::patcher::sweep_stale_overlay_for(&app, &validated);
 
     let mut app_state = state.lock().map_err(|e| e.to_string())?;
     app_state.game_path = Some(validated);

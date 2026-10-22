@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 
-const GITHUB_REPO = "Mouadzz/zushi";
+const GITHUB_REPO = "onlyleague/onlyskinz";
 const RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
 const API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 

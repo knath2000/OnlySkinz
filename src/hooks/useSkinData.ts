@@ -9,10 +9,10 @@ const TREE_API_URL =
 const SKINS_JSON_URL =
   "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/skins.json";
 
-const SKIN_IDS_CACHE_KEY = "zushi:skin_ids";
+const SKIN_IDS_CACHE_KEY = "onlyskinz:skin_ids";
 // _v2 invalidates the stale name-based cache from older builds.
-const REPO_ZIPS_CACHE_KEY = "zushi:repo_files_v2";
-const CHROMAS_CACHE_KEY = "zushi:chromas";
+const REPO_ZIPS_CACHE_KEY = "onlyskinz:repo_files_v2";
+const CHROMAS_CACHE_KEY = "onlyskinz:chromas";
 
 let skinIdsCache: Record<string, string> | null = null;
 let repoZipsCache: Map<string, string> | null = null;

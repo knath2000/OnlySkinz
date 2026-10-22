@@ -1,0 +1,43 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "onlyskinz-license"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# ---------------------------------------------------------------------------
+# D1 database
+#   npx wrangler d1 create onlyskinz-license
+#   paste the returned database_id below
+# ---------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "onlyskinz-license"
+database_id = "2875b78d-59c2-4b5e-95bd-e133da73789f"
+
+# ---------------------------------------------------------------------------
+# Scheduled jobs: expire trials, revoke lapsed subscriptions, reminders.
+# ---------------------------------------------------------------------------
+[triggers]
+crons = ["0 3 * * *"]
+
+# ---------------------------------------------------------------------------
+# Public variables (safe to commit)
+# ---------------------------------------------------------------------------
+[vars]
+PAYPAL_ENV = "sandbox"
+# Set after running `npm run setup:paypal`
+PAYPAL_PLAN_ID = "P-195903017C917115LNKZNLUA"
+# PMVDL runs on a *.workers.dev host; OnlySkinz can too. Replace <account>.
+PUBLIC_BASE_URL = "https://onlyskinz-license.knath2000.workers.dev"
+SUCCESS_URL = "https://onlyskinz-license.knath2000.workers.dev/checkout/success"
+CANCEL_URL = "https://onlyskinz-license.knath2000.workers.dev/checkout/cancel"
+# Reuses the domain already verified with Resend for PMVDL.
+RESEND_FROM_EMAIL = "OnlySkinz <licenses@pmvhavendownloader.com>"
+
+# ---------------------------------------------------------------------------
+# Secrets — set outside git:
+#   npx wrangler secret put PAYPAL_CLIENT_ID
+#   npx wrangler secret put PAYPAL_CLIENT_SECRET
+#   npx wrangler secret put PAYPAL_WEBHOOK_ID
+#   npx wrangler secret put RESEND_API_KEY
+#   npx wrangler secret put ADMIN_SETUP_TOKEN
+# ---------------------------------------------------------------------------

@@ -42,7 +42,7 @@ static auto is_wad(fs::path const& path) -> bool {
 static auto is_rebased_mod(fs::path const& path) -> bool {
     std::ifstream info(path / "META" / "info.json");
     std::string contents{std::istreambuf_iterator<char>{info}, {}};
-    return contents.find("\"ZushiRebased\": true") != std::string::npos;
+    return contents.find("\"OnlySkinzRebased\": true") != std::string::npos;
 }
 
 static auto mod_addwad(fs::path src, fs::path dst, fs::path game, bool noTFT, bool removeUNK) -> void {
@@ -248,6 +248,17 @@ static auto mod_mkoverlay(fs::path src, fs::path dst, fs::path game, fs::names m
 
     logi("Cleaning up stray wads");
     overlay_index.cleanup_in_directory(dst);
+
+    // Record which game build this overlay was built from. The injector refuses
+    // to serve an overlay whose stamp does not match the installed game, which
+    // is what prevents a post-patch launch from mounting stale WADs.
+    auto const build_id = patcher::game_build_id(game);
+    if (!build_id.empty()) {
+        logi("Stamping overlay with game build {}", build_id);
+        patcher::write_build_stamp(dst, build_id);
+    } else {
+        logw("Could not identify game build; overlay will not be staleness-checked");
+    }
 }
 
 static auto mod_runoverlay(fs::path overlay, fs::path config_file, fs::path game, fs::names opts) -> void {
@@ -312,6 +323,12 @@ static auto mod_runoverlay(fs::path overlay, fs::path config_file, fs::path game
             opts);
     } catch (patcher::PatcherAborted const&) {
         // nothing to see here, lol
+        lol::error::stack().clear();
+        return;
+    } catch (patcher::PatcherStaleOverlay const&) {
+        // The "Status: Overlay is stale" line has already been emitted by the
+        // update callback. Exit cleanly so the UI shows a real reason instead of
+        // "Patcher exited unexpectedly".
         lol::error::stack().clear();
         return;
     } catch (...) {

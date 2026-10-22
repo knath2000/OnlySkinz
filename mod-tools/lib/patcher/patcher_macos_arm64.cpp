@@ -270,8 +270,31 @@ auto patcher::run(std::function<void(Message, char const*)> update,
     auto ctx = Context{};
     ctx.set_prefix(profile_path);
     (void)config_path;
-    (void)game_path;
-    (void)opts;
+    auto const scan_only = opts == "scan-only";
+
+    // Refuse to inject when the game was patched after the overlay was built: the
+    // overlay's WADs no longer match this build, and serving them makes the
+    // client fail the mount, write SOFT_REPAIR, and trigger a repair loop.
+    // Checked once here (so a patch that already landed fails immediately) and
+    // again per launch (so a patch that lands while we wait for the game does
+    // not slip through).
+    auto const stamped_build = read_build_stamp(profile_path);
+    auto const overlay_stale = [&]() -> bool {
+        if (scan_only || stamped_build.empty()) return false;
+        auto const current_build = game_build_id(game_path);
+        if (current_build.empty() || current_build == stamped_build) return false;
+        patch_log("overlay is stale: built for %s, game is %s - refusing to patch",
+                  stamped_build.c_str(),
+                  current_build.c_str());
+        update(M_STALE_OVERLAY, "");
+        return true;
+    };
+
+    if (overlay_stale()) {
+        throw PatcherStaleOverlay(
+            "Game was updated since these skins were applied; re-apply your skins.");
+    }
+
     std::uint32_t last_patched_pid = 0;
     for (;;) {
         auto pid = Process::FindPid("/LeagueofLegends");
@@ -300,6 +323,11 @@ auto patcher::run(std::function<void(Message, char const*)> update,
 
             update(M_SCAN, "");
             ctx.scan(process);
+
+            if (overlay_stale()) {
+                throw PatcherStaleOverlay(
+                    "Game was updated since these skins were applied; re-apply your skins.");
+            }
 
             // Check if this process was already patched (e.g. by a previous patcher
             // instance). Read the first 8 bytes at wad_verify - if they match our
@@ -376,6 +404,11 @@ auto patcher::run(std::function<void(Message, char const*)> update,
             update(M_DONE, "");
         } catch (PatcherAborted const&) {
             throw;  // user-initiated abort: propagate so mod_runoverlay can clean up
+        } catch (PatcherStaleOverlay const&) {
+            // The overlay was built for a different game build. Injecting it
+            // would make the client fail the WAD mount and trigger a repair, and
+            // retrying would only spam the UI. Propagate so runoverlay stops.
+            throw;
         } catch (std::exception const& e) {
             last_patched_pid = pid;  // don't hot-spin on the same broken PID
             patch_log("failed for pid=%u: %s", pid, e.what());

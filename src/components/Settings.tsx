@@ -113,8 +113,8 @@ export default function Settings({
     setClearingContent(true);
     try {
       await Promise.all([clearAllSkins(), clearAllCustoms()]);
-      localStorage.removeItem("zushi_skin_selection");
-      localStorage.removeItem("zushi_customs_enabled");
+      localStorage.removeItem("onlyskinz_skin_selection");
+      localStorage.removeItem("onlyskinz_customs_enabled");
       await Promise.all([onSkinsCleared(), onCustomsCleared()]);
     } catch {
       // ignore
@@ -160,7 +160,7 @@ export default function Settings({
             <div className="flex flex-col gap-0.5">
               <span className="text-ink text-sm">Launch at login</span>
               <span className="text-ink-muted text-xs">
-                Start Zushi automatically when you log in
+                Start OnlySkinz automatically when you log in
               </span>
             </div>
           </div>

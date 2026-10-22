@@ -1,11 +1,204 @@
 use crate::state::{AppState, PatcherStatus};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
+
+/// Written by `mod-tools mkoverlay`, read back here to decide whether an overlay
+/// still matches the installed game. Keep in sync with build_id.cpp.
+const BUILD_STAMP_NAME: &str = ".onlyskinz-build";
+
+const STALE_OVERLAY_MSG: &str = "Game was updated since these skins were applied; re-apply your skins.";
+
+/// Identifies the installed League build. Riot rewrites the release ID on every
+/// patch, so a change here means any existing overlay WAD is stale.
+///
+/// Mirrors `patcher::game_build_id` in mod-tools/lib/patcher/build_id.cpp so the
+/// UI can make the same judgement without launching the injector.
+fn game_build_id(game_path: &str) -> Option<String> {
+    // game_path is <install>/Contents/LoL/Game; Game.ok sits in <install>/Contents/LoL.
+    let install = Path::new(game_path).parent()?;
+
+    if let Some(line) = fs::read_to_string(install.join("Game.ok"))
+        .ok()
+        .and_then(|c| c.lines().next().map(|l| l.trim().to_string()))
+        .filter(|l| !l.is_empty())
+    {
+        if let Some(rest) = line.split("/releases/").nth(1) {
+            if let Some(id) = rest.split('.').next() {
+                if !id.is_empty() {
+                    return Some(format!("release:{}", id));
+                }
+            }
+        }
+        return Some(format!("gameok:{}", line));
+    }
+
+    // Fall back to the executable's bundle version when Game.ok is missing.
+    let plist = fs::read_to_string(
+        Path::new(game_path)
+            .join("LeagueofLegends.app")
+            .join("Contents")
+            .join("Info.plist"),
+    )
+    .ok()?;
+    let after_key = plist.split("<key>CFBundleVersion</key>").nth(1)?;
+    let value = after_key.split("<string>").nth(1)?.split("</string>").next()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(format!("version:{}", value))
+    }
+}
+
+fn read_build_stamp(overlay_dir: &Path) -> Option<String> {
+    fs::read_to_string(overlay_dir.join(BUILD_STAMP_NAME))
+        .ok()
+        .and_then(|c| c.lines().next().map(|l| l.trim().to_string()))
+        .filter(|l| !l.is_empty())
+}
+
+/// True when the overlay was built for a game build other than the installed
+/// one. False when either identity is unknown, so an unstamped overlay is never
+/// treated as stale.
+fn overlay_is_stale(overlay_dir: &Path, game_path: &str) -> bool {
+    let Some(stamped) = read_build_stamp(overlay_dir) else {
+        return false;
+    };
+    match game_build_id(game_path) {
+        Some(current) => stamped != current,
+        None => false,
+    }
+}
+
+/// Delete a stale overlay instead of leaving it reachable.
+///
+/// The injector serves the overlay as a stand-in for the game's own WADs. If it
+/// was built before the installed game build, serving it makes the client fail
+/// the WAD mount, write SOFT_REPAIR, and trigger a repair loop. The injector
+/// refuses stale overlays on its own, but removing the files means a stale
+/// overlay cannot be reached even if that check is bypassed.
+fn sweep_stale_overlay(app: &AppHandle, game_path: &str) {
+    let base = work_dir(app);
+    let overlay = base.join("overlay");
+    if !overlay_is_stale(&overlay, game_path) {
+        return;
+    }
+
+    diagnostic_log(
+        &base.join("patcher-diagnostic.log"),
+        format!(
+            "removing stale overlay: built for {:?}, game is {:?}",
+            read_build_stamp(&overlay),
+            game_build_id(game_path)
+        ),
+    );
+    let _ = fs::remove_dir_all(&overlay);
+    let _ = fs::remove_dir_all(base.join("installed"));
+}
+
+/// Called when the app learns which install to use, so an overlay left behind by
+/// an earlier session is discarded before any patcher can be started against it.
+pub fn sweep_stale_overlay_for(app: &AppHandle, game_path: &str) {
+    sweep_stale_overlay(app, game_path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a throwaway `<install>/Contents/LoL/Game` tree with the given
+    /// Game.ok contents (and optionally an Info.plist for the fallback path).
+    fn fake_install(tag: &str, game_ok: Option<&str>, plist_version: Option<&str>) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("onlyskinz-buildid-{}", tag));
+        let _ = fs::remove_dir_all(&root);
+        let install = root.join("Contents").join("LoL");
+        let game = install.join("Game");
+        fs::create_dir_all(&game).unwrap();
+        if let Some(contents) = game_ok {
+            fs::write(install.join("Game.ok"), contents).unwrap();
+        }
+        if let Some(version) = plist_version {
+            let contents = game.join("LeagueofLegends.app").join("Contents");
+            fs::create_dir_all(&contents).unwrap();
+            fs::write(
+                contents.join("Info.plist"),
+                format!(
+                    "<plist><dict><key>CFBundleVersion</key><string>{}</string></dict></plist>",
+                    version
+                ),
+            )
+            .unwrap();
+        }
+        game
+    }
+
+    #[test]
+    fn build_id_comes_from_game_ok_release_url() {
+        let game = fake_install(
+            "release",
+            Some("https://lol.secure.dyn.riotcdn.net/channels/public/releases/B0DE7A4FF23DB6B4.manifest\nen_US\nmac\n"),
+            None,
+        );
+        assert_eq!(
+            game_build_id(game.to_str().unwrap()).as_deref(),
+            Some("release:B0DE7A4FF23DB6B4")
+        );
+    }
+
+    #[test]
+    fn build_id_falls_back_to_bundle_version() {
+        let game = fake_install("version", None, Some("16.21.8298620"));
+        assert_eq!(
+            game_build_id(game.to_str().unwrap()).as_deref(),
+            Some("version:16.21.8298620")
+        );
+    }
+
+    #[test]
+    fn build_id_is_none_when_install_is_unidentifiable() {
+        let game = fake_install("unknown", None, None);
+        assert_eq!(game_build_id(game.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn unstamped_overlay_is_not_stale() {
+        let game = fake_install("unstamped", Some("https://x/releases/AAAA.manifest\n"), None);
+        let overlay = std::env::temp_dir().join("onlyskinz-buildid-unstamped-overlay");
+        let _ = fs::remove_dir_all(&overlay);
+        fs::create_dir_all(&overlay).unwrap();
+        assert!(!overlay_is_stale(&overlay, game.to_str().unwrap()));
+    }
+
+    #[test]
+    fn stale_overlay_is_detected_only_on_mismatch() {
+        let game = fake_install("stale", Some("https://x/releases/AAAA.manifest\n"), None);
+        let overlay = std::env::temp_dir().join("onlyskinz-buildid-stale-overlay");
+        let _ = fs::remove_dir_all(&overlay);
+        fs::create_dir_all(&overlay).unwrap();
+
+        fs::write(overlay.join(BUILD_STAMP_NAME), "release:AAAA\n").unwrap();
+        assert!(!overlay_is_stale(&overlay, game.to_str().unwrap()));
+
+        fs::write(overlay.join(BUILD_STAMP_NAME), "release:BBBB\n").unwrap();
+        assert!(overlay_is_stale(&overlay, game.to_str().unwrap()));
+    }
+
+    #[test]
+    fn unidentifiable_install_never_blocks_an_overlay() {
+        let game = fake_install("noblock", None, None);
+        let overlay = std::env::temp_dir().join("onlyskinz-buildid-noblock-overlay");
+        let _ = fs::remove_dir_all(&overlay);
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(overlay.join(BUILD_STAMP_NAME), "release:AAAA\n").unwrap();
+        assert!(!overlay_is_stale(&overlay, game.to_str().unwrap()));
+    }
+}
 
 /// Serializes patcher setup (kill-old → import → mkoverlay → spawn → record pid).
 /// Two live mod-tools tracers on the same game task port make the kernel SIGSEGV
@@ -375,6 +568,8 @@ fn do_apply_skins_bg(
     let log_path = base.join("patcher-diagnostic.log");
     diagnostic_log(&log_path, format!("setup: game={} archives={:?}", game_path, zip_paths));
 
+    // Any previous overlay is discarded here and rebuilt below, so a stale one
+    // cannot survive into the next session's runoverlay.
     let _ = fs::remove_dir_all(&installed_dir);
     let _ = fs::remove_dir_all(&overlay_dir);
     fs::create_dir_all(&installed_dir).map_err(|e| e.to_string())?;
@@ -494,11 +689,16 @@ fn do_apply_skins_bg(
 
     let state_arc = state.clone();
     let stdout_log = log_path.clone();
+    // The stale case exits cleanly, so it must be remembered: the exit-status
+    // block below would otherwise report a generic "exited unexpectedly" and
+    // bury the reason the user needs.
+    let stale_overlay = Arc::new(AtomicBool::new(false));
+    let stale_overlay_out = stale_overlay.clone();
     let stdout_thread = std::thread::spawn(move || {
         if let Some(out) = stdout {
             let reader = BufReader::new(out);
             for line in reader.lines().map_while(Result::ok) {
-                eprintln!("[zushi] mod-tools: {}", line);
+                eprintln!("[onlyskinz] mod-tools: {}", line);
                 diagnostic_log(&stdout_log, format!("stdout: {}", line));
                 if let Some(status_msg) = line.strip_prefix("Status: ") {
                     let new_status = match status_msg {
@@ -508,6 +708,10 @@ fn do_apply_skins_bg(
                         "Patching" => Some(PatcherStatus::Patching),
                         "Waiting for exit" => Some(PatcherStatus::InGame),
                         "League exited" => Some(PatcherStatus::GameExited),
+                        "Overlay is stale" => {
+                            stale_overlay_out.store(true, Ordering::SeqCst);
+                            Some(PatcherStatus::Error(STALE_OVERLAY_MSG.to_string()))
+                        }
                         _ => None,
                     };
                     if let Some(status) = new_status {
@@ -527,7 +731,7 @@ fn do_apply_skins_bg(
         if let Some(err) = stderr {
             let reader = BufReader::new(err);
             for line in reader.lines().map_while(Result::ok) {
-                eprintln!("[zushi] mod-tools err: {}", line);
+                eprintln!("[onlyskinz] mod-tools err: {}", line);
                 diagnostic_log(&stderr_log, format!("stderr: {}", line));
             }
         }
@@ -542,7 +746,9 @@ fn do_apply_skins_bg(
 
     if let Ok(mut s) = state.lock() {
         if s.patcher_gen == gen {
-            if !exit_status.success() {
+            if stale_overlay.load(Ordering::SeqCst) {
+                // Already reported with its explanation by the stdout thread.
+            } else if !exit_status.success() {
                 use std::os::unix::process::ExitStatusExt;
                 let detail = if let Some(code) = exit_status.code() {
                     format!("exit code {}", code)
@@ -556,7 +762,7 @@ fn do_apply_skins_bg(
                 } else {
                     "unknown".to_string()
                 };
-                eprintln!("[zushi] mod-tools runoverlay exited: {}", detail);
+                eprintln!("[onlyskinz] mod-tools runoverlay exited: {}", detail);
                 s.patcher_status =
                     PatcherStatus::Error(format!("Patcher exited unexpectedly ({})", detail));
             } else {

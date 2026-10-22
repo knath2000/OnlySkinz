@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="icon.png" alt="Zushi" width="120" />
+  <img src="icon.png" alt="OnlySkinz" width="120" />
 </p>
 
-<h1 align="center">Zushi</h1>
+<h1 align="center">OnlySkinz</h1>
 
 <p align="center">
-  <a href="https://github.com/Mouadzz/zushi/releases/latest"><img src="https://img.shields.io/badge/download-latest-c89b3c?style=for-the-badge" alt="Download" /></a>
+  <a href="https://github.com/onlyleague/onlyskinz/releases/latest"><img src="https://img.shields.io/badge/download-latest-c89b3c?style=for-the-badge" alt="Download" /></a>
 </p>
 
 <p align="center">
@@ -23,14 +23,15 @@
 ---
 
 <p align="center">
-  <img src="preview.png" alt="Zushi Preview" width="700" />
+  <img src="preview.png" alt="OnlySkinz Preview" width="700" />
 </p>
 
 ## Features
 
 - Browse all champions and their skins with splash art previews
 - Download individual skins or batch download all skins for a champion
-- Select and apply multiple skins at once - one per champion
+- Select multiple skins per champion; Apply uses one at random (one per champion)
+- Favorite skins from **My Skins** and revisit them in the dedicated **Favorites** tab
 - Review and deselect the current selection from the dedicated **Selected** tab
 - Import custom mods (.fantome/.zip)
 - Real-time patcher status (importing, waiting for game, skins active, etc.)
@@ -40,28 +41,28 @@
 
 ## Installation
 
-1. Download the latest `.dmg` for your Mac from the [Releases page](https://github.com/Mouadzz/zushi/releases/latest):
-   - **Apple Silicon** (M1/M2/M3/M4/M5...) - `Zushi_x.x.x_aarch64.dmg`
-   - **Intel** - `Zushi_x.x.x_x64.dmg`
-2. Open the `.dmg` and drag Zushi to your Applications folder
-3. On first launch, macOS may show **"Zushi is damaged and can't be opened"** - this is normal for ad-hoc signed apps. To fix this, run in Terminal:
+1. Download the latest `.dmg` for your Mac from the [Releases page](https://github.com/onlyleague/onlyskinz/releases/latest):
+   - **Apple Silicon** (M1/M2/M3/M4/M5...) - `OnlySkinz_x.x.x_aarch64.dmg`
+   - **Intel** - `OnlySkinz_x.x.x_x64.dmg`
+2. Open the `.dmg` and drag OnlySkinz to your Applications folder
+3. On first launch, macOS may show **"OnlySkinz is damaged and can't be opened"** - this is normal for ad-hoc signed apps. To fix this, run in Terminal:
    ```
-   xattr -cr /Applications/Zushi.app
+   xattr -cr /Applications/OnlySkinz.app
    ```
    Then open the app again normally.
 
 ## Usage
 
 1. **Start League client** - Open the Riot/League client first and leave it running.
-2. **Run Zushi** - Open Zushi once the client is up.
-3. **Download & apply skins** - Pick a champion, download skins if needed, then go to **My Skins**, select one skin per champion, and click **Apply**.
+2. **Run OnlySkinz** - Open OnlySkinz once the client is up.
+3. **Download & apply skins** - Pick a champion, download skins if needed, then go to **My Skins**, select one or more skins per champion, and click **Apply**. When a champion is locked in, a random one of its selected skins is applied.
 4. **Start your game** - With the patcher showing **Waiting for game**, queue up and play.
 
-> **Important:** Apply the skin before champion select ends (use the default skin in client) so it is locked in when the game starts. If it does not apply, close the game, reopen League, run Zushi again, apply, and reconnect.
+> **Important:** Apply the skin before champion select ends (use the default skin in client) so it is locked in when the game starts. If it does not apply, close the game, reopen League, run OnlySkinz again, apply, and reconnect.
 
 ## Disclaimer
 
-Zushi is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+OnlySkinz is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
 
 Skins are visible only to you and do not affect gameplay or provide any competitive advantage. Use at your own risk.
 

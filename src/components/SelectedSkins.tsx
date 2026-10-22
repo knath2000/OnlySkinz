@@ -2,15 +2,13 @@ import { useState, useEffect, useMemo } from "react";
 import { Layers, Check, X } from "lucide-react";
 import { lookupChromaInfo, ensureChromaInfo, ensureSkinIds } from "../hooks/useSkinData";
 import { SkinThumb, ChampAvatar } from "./SkinMedia";
-import type { DownloadedSkin } from "../types";
-
-type Selection = Record<string, string>;
+import type { DownloadedSkin, SkinSelection } from "../types";
 
 interface SelectedSkinsProps {
   downloads: DownloadedSkin[];
   patcherActive: boolean;
-  selection: Selection;
-  onSelectionChange: (selection: Selection) => void;
+  selection: SkinSelection;
+  onSelectionChange: (selection: SkinSelection) => void;
 }
 
 function useChromaReady(): boolean {
@@ -39,10 +37,12 @@ export default function SelectedSkins({
   const chromaReady = useChromaReady();
   const [search, setSearch] = useState("");
 
-  const deselect = (championName: string) => {
+  const deselect = (championName: string, skinName: string) => {
     if (patcherActive) return;
+    const remaining = (selection[championName] ?? []).filter((n) => n !== skinName);
     const next = { ...selection };
-    delete next[championName];
+    if (remaining.length > 0) next[championName] = remaining;
+    else delete next[championName];
     onSelectionChange(next);
   };
 
@@ -53,12 +53,22 @@ export default function SelectedSkins({
 
   const entries = useMemo(() => {
     void chromaReady; // re-render once Community Dragon chroma data lands
-    return Object.entries(selection).map(([championName, skinName]) => {
-      const dl =
-        downloads.find((d) => d.champion_name === championName && d.skin_name === skinName) ?? null;
-      const chroma = lookupChromaInfo(skinName);
-      return { championName, skinName, dl, chroma };
-    });
+    const out: {
+      championName: string;
+      skinName: string;
+      dl: DownloadedSkin | null;
+      chroma: ReturnType<typeof lookupChromaInfo>;
+    }[] = [];
+    for (const [championName, skinNames] of Object.entries(selection)) {
+      for (const skinName of skinNames) {
+        const dl =
+          downloads.find(
+            (d) => d.champion_name === championName && d.skin_name === skinName
+          ) ?? null;
+        out.push({ championName, skinName, dl, chroma: lookupChromaInfo(skinName) });
+      }
+    }
+    return out;
   }, [selection, downloads, chromaReady]);
 
   const filtered = useMemo(() => {
@@ -83,7 +93,7 @@ export default function SelectedSkins({
           <div>
             <p className="text-ink-secondary text-sm">No skins selected yet</p>
             <p className="text-ink-muted mt-1 text-xs">
-              Pick one skin per champion in My Skins to see them here
+              Pick skins in My Skins to see them here
             </p>
           </div>
         </div>
@@ -135,7 +145,7 @@ export default function SelectedSkins({
 
             return (
               <div
-                key={championName}
+                key={`${championName}::${skinName}`}
                 className="cv-row border-border flex items-center gap-3 border-b px-4 py-3"
               >
                 <div className="flex w-40 shrink-0 items-center gap-2.5">
@@ -181,7 +191,7 @@ export default function SelectedSkins({
                   )}
 
                   <button
-                    onClick={() => deselect(championName)}
+                    onClick={() => deselect(championName, skinName)}
                     disabled={patcherActive}
                     className="border-border text-ink-secondary hover:text-error hover:border-error/40 flex w-fit cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors disabled:pointer-events-none disabled:opacity-30"
                   >

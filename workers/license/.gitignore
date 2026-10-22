@@ -1,0 +1,6 @@
+# Local wrangler state (D1 sqlite, caches)
+.wrangler/
+# Dry-run bundle output
+dist/
+# Local secret overrides
+.dev.vars

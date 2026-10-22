@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22222c"/>
+      <stop offset="1" stop-color="#0a0a10"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fdf0c4"/>
+      <stop offset="0.35" stop-color="#f5d77a"/>
+      <stop offset="0.7" stop-color="#c89b3c"/>
+      <stop offset="1" stop-color="#a17a2e"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- app tile -->
+  <rect x="0" y="0" width="512" height="512" rx="114" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="112.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+
+  <!-- shield -->
+  <path d="M256 78 L412 138 V258 C412 350 344 408 256 442 C168 408 100 350 100 258 V138 Z"
+        fill="url(#gold)"/>
+  <path d="M256 78 L412 138 V258 C412 350 344 408 256 442 C168 408 100 350 100 258 V138 Z"
+        fill="url(#sheen)"/>
+  <path d="M256 96 L396 150 V258 C396 342 334 396 256 426 C178 396 116 342 116 258 V150 Z"
+        fill="none" stroke="#7a5c22" stroke-opacity="0.35" stroke-width="4"/>
+
+  <!-- S mark -->
+  <path d="M322 208
+           C322 179 293 164 256 164
+           C214 164 186 182 186 209
+           C186 235 211 246 256 254
+           C303 262 328 274 328 301
+           C328 331 295 348 256 348
+           C212 348 182 331 182 305"
+        fill="none" stroke="#121218" stroke-width="37"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- sparkle -->
+  <path d="M256 122 L264 140 L282 148 L264 156 L256 174 L248 156 L230 148 L248 140 Z"
+        fill="#121218" fill-opacity="0.85"/>
+</svg>

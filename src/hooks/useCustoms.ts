@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { importCustom, listCustoms, removeCustom } from "../lib/commands";
 import type { CustomMod } from "../types";
 
-const ENABLED_KEY = "zushi_customs_enabled";
+const ENABLED_KEY = "onlyskinz_customs_enabled";
 
 function loadEnabled(): Set<string> {
   try {

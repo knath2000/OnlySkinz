@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
-import { Layers, Check, Info, X, Search } from "lucide-react";
+import { Layers, Check, Info, X, Search, Star } from "lucide-react";
 import { lookupChromaInfo, ensureChromaInfo } from "../hooks/useSkinData";
 import { SkinThumb, ChampAvatar } from "./SkinMedia";
-import type { DownloadedSkin } from "../types";
+import { favoriteKey } from "../lib/favorites";
+import type { DownloadedSkin, SkinSelection } from "../types";
 
 function useChromaReady(): boolean {
   const [ready, setReady] = useState(false);
@@ -27,14 +28,14 @@ type DownloadGroup = {
   chromas: { dl: DownloadedSkin; colors: string[] }[];
 };
 
-type Selection = Record<string, string>;
-
 interface MySkinsProps {
   downloads: DownloadedSkin[];
   patcherActive: boolean;
-  selection: Selection;
-  onSelectionChange: (selection: Selection) => void;
+  selection: SkinSelection;
+  onSelectionChange: (selection: SkinSelection) => void;
   onDelete: (championName: string, skinName: string) => Promise<void>;
+  favorites: Set<string>;
+  onToggleFavorite: (championName: string, skinName: string) => void;
 }
 
 export default function MySkins({
@@ -43,42 +44,51 @@ export default function MySkins({
   selection,
   onSelectionChange,
   onDelete,
+  favorites,
+  onToggleFavorite,
 }: MySkinsProps) {
   const chromaReady = useChromaReady(); // re-render once Community Dragon chroma data lands
 
   const toggleSkin = (championName: string, skinName: string) => {
     if (patcherActive) return;
-    if (selection[championName] === skinName) {
-      const next = { ...selection };
-      delete next[championName];
-      onSelectionChange(next);
+    const current = selection[championName] ?? [];
+    const next = { ...selection };
+    if (current.includes(skinName)) {
+      const remaining = current.filter((n) => n !== skinName);
+      if (remaining.length > 0) next[championName] = remaining;
+      else delete next[championName];
     } else {
-      onSelectionChange({ ...selection, [championName]: skinName });
+      next[championName] = [...current, skinName];
     }
+    onSelectionChange(next);
+  };
+
+  // Removes the given skins from a champion's selection (dropping the champion
+  // entry entirely once nothing is left).
+  const deselectSkins = (championName: string, skinNames: string[]) => {
+    const current = selection[championName] ?? [];
+    const remaining = current.filter((n) => !skinNames.includes(n));
+    if (remaining.length === current.length) return;
+    const next = { ...selection };
+    if (remaining.length > 0) next[championName] = remaining;
+    else delete next[championName];
+    onSelectionChange(next);
   };
 
   const handleDelete = async (championName: string, skinName: string) => {
     if (patcherActive) return;
     // Also deselect if this skin was selected
-    if (selection[championName] === skinName) {
-      const next = { ...selection };
-      delete next[championName];
-      onSelectionChange(next);
-    }
+    deselectSkins(championName, [skinName]);
     await onDelete(championName, skinName);
   };
 
   const handleDeleteGroup = async (championName: string, skinNames: string[]) => {
     if (patcherActive || skinNames.length === 0) return;
-    if (skinNames.includes(selection[championName])) {
-      const next = { ...selection };
-      delete next[championName];
-      onSelectionChange(next);
-    }
+    deselectSkins(championName, skinNames);
     await Promise.all(skinNames.map((n) => onDelete(championName, n)));
   };
 
-  const selectedCount = Object.keys(selection).length;
+  const selectedCount = Object.values(selection).reduce((n, names) => n + names.length, 0);
   const [search, setSearch] = useState("");
 
   // Grouping scans the ~9k skin database per skin, so memoize it on downloads
@@ -185,7 +195,8 @@ export default function MySkins({
             </div>
           )}
           {filteredEntries.map(([champion, groups]) => {
-            const selectedSkin = selection[champion];
+            const selectedSkins = selection[champion] ?? [];
+            const selectedSet = new Set(selectedSkins);
             const baseCount = groups.length;
             return (
               <div
@@ -204,12 +215,17 @@ export default function MySkins({
 
                 <div className="flex min-w-0 flex-1 flex-wrap gap-2">
                   {groups.map((group) => {
-                    const baseSelected = selectedSkin === group.baseSkinName;
-                    const selectedChroma = group.chromas.find(
-                      (c) => c.dl.skin_name === selectedSkin
+                    const baseSelected = selectedSet.has(group.baseSkinName);
+                    const selectedChroma = group.chromas.find((c) =>
+                      selectedSet.has(c.dl.skin_name)
                     );
                     const anySelected = baseSelected || !!selectedChroma;
                     const baseClickable = !patcherActive && group.base !== null;
+                    const baseFav = group.base
+                      ? favorites.has(
+                          favoriteKey(group.base.champion_name, group.base.skin_name)
+                        )
+                      : false;
 
                     const hasChromas = group.chromas.length > 0;
                     return (
@@ -255,7 +271,7 @@ export default function MySkins({
                                 <Check size={11} strokeWidth={3} className="text-charcoal-600" />
                               </div>
                             )}
-                            {selectedChroma && (
+                            {!baseSelected && selectedChroma && (
                               <div
                                 className="absolute top-1 right-1 h-5 w-5 rounded-full border-2 border-white shadow-sm"
                                 style={{
@@ -268,11 +284,31 @@ export default function MySkins({
                             )}
 
                             <div className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/80 via-black/40 to-transparent px-1.5 pt-4 pb-1">
-                              <p className="line-clamp-2 text-[10px] leading-tight text-white/90">
+                              <p className="line-clamp-2 pr-6 text-[10px] leading-tight text-white/90">
                                 {group.baseSkinName}
                               </p>
                             </div>
                           </button>
+
+                          {group.base && (
+                            <button
+                              onClick={() =>
+                                onToggleFavorite(
+                                  group.base!.champion_name,
+                                  group.base!.skin_name
+                                )
+                              }
+                              className="bg-charcoal-500/80 hover:bg-charcoal-500 absolute right-1 bottom-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded-full shadow transition-colors"
+                              title={baseFav ? "Remove from favorites" : "Add to favorites"}
+                            >
+                              <Star
+                                size={11}
+                                strokeWidth={2}
+                                fill={baseFav ? "currentColor" : "none"}
+                                className={baseFav ? "text-gold-400" : "text-white/80"}
+                              />
+                            </button>
+                          )}
 
                           {!patcherActive && group.base && (
                             <button
@@ -295,41 +331,71 @@ export default function MySkins({
                         </div>
 
                         {group.chromas.length > 0 && (
-                          <div className="mt-1 flex w-32 flex-wrap items-center gap-1">
+                          <div className="mt-1 flex w-32 flex-wrap items-start gap-x-1.5 gap-y-1">
                             {group.chromas.map((c) => {
-                              const isSel = selectedSkin === c.dl.skin_name;
+                              const isSel = selectedSet.has(c.dl.skin_name);
+                              const isFav = favorites.has(
+                                favoriteKey(c.dl.champion_name, c.dl.skin_name)
+                              );
                               const bg = c.colors[1]
                                 ? `linear-gradient(135deg, ${c.colors[0]} 0% 50%, ${c.colors[1]} 50% 100%)`
                                 : (c.colors[0] ?? undefined);
                               return (
-                                <button
+                                <div
                                   key={c.dl.skin_name}
-                                  onClick={() => toggleSkin(c.dl.champion_name, c.dl.skin_name)}
-                                  onContextMenu={(e) => {
-                                    e.preventDefault();
-                                    handleDelete(c.dl.champion_name, c.dl.skin_name);
-                                  }}
-                                  disabled={patcherActive}
-                                  title={`${c.dl.skin_name}\n(right-click to delete)`}
-                                  className={[
-                                    "ring-offset-charcoal-400 relative h-4 w-4 shrink-0 rounded-sm transition-all",
-                                    patcherActive ? "cursor-default opacity-50" : "cursor-pointer",
-                                    isSel
-                                      ? "ring-gold-400 ring-2 ring-offset-1"
-                                      : "ring-charcoal-50/30 hover:ring-charcoal-50/60 ring-1",
-                                  ].join(" ")}
-                                  style={{
-                                    background: bg ?? "var(--color-charcoal-300, #3a3a3a)",
-                                  }}
+                                  className="flex flex-col items-center gap-0.5"
                                 >
-                                  {isSel && (
-                                    <Check
-                                      size={9}
-                                      strokeWidth={3}
-                                      className="absolute inset-0 m-auto text-white drop-shadow"
+                                  <button
+                                    onClick={() => toggleSkin(c.dl.champion_name, c.dl.skin_name)}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      handleDelete(c.dl.champion_name, c.dl.skin_name);
+                                    }}
+                                    disabled={patcherActive}
+                                    title={`${c.dl.skin_name}\n(right-click to delete)`}
+                                    className={[
+                                      "ring-offset-charcoal-400 relative h-4 w-4 shrink-0 rounded-sm transition-all",
+                                      patcherActive
+                                        ? "cursor-default opacity-50"
+                                        : "cursor-pointer",
+                                      isSel
+                                        ? "ring-gold-400 ring-2 ring-offset-1"
+                                        : "ring-charcoal-50/30 hover:ring-charcoal-50/60 ring-1",
+                                    ].join(" ")}
+                                    style={{
+                                      background: bg ?? "var(--color-charcoal-300, #3a3a3a)",
+                                    }}
+                                  >
+                                    {isSel && (
+                                      <Check
+                                        size={9}
+                                        strokeWidth={3}
+                                        className="absolute inset-0 m-auto text-white drop-shadow"
+                                      />
+                                    )}
+                                  </button>
+
+                                  <button
+                                    onClick={() =>
+                                      onToggleFavorite(c.dl.champion_name, c.dl.skin_name)
+                                    }
+                                    className="flex h-3 w-4 cursor-pointer items-center justify-center"
+                                    title={
+                                      isFav ? "Remove from favorites" : "Add to favorites"
+                                    }
+                                  >
+                                    <Star
+                                      size={10}
+                                      strokeWidth={2}
+                                      fill={isFav ? "currentColor" : "none"}
+                                      className={
+                                        isFav
+                                          ? "text-gold-400"
+                                          : "text-ink-muted hover:text-gold-400"
+                                      }
                                     />
-                                  )}
-                                </button>
+                                  </button>
+                                </div>
                               );
                             })}
                           </div>

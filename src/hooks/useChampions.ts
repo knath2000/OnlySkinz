@@ -6,8 +6,8 @@ import { getCached, setCache } from "../lib/cache";
 const FALLBACK_VERSION = "16.12.1";
 const VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json";
 
-const CACHE_KEY = "zushi:champions_v3";
-const VERSION_CACHE_KEY = "zushi:ddragon_version";
+const CACHE_KEY = "onlyskinz:champions_v3";
+const VERSION_CACHE_KEY = "onlyskinz:ddragon_version";
 
 let ddragonVersion = FALLBACK_VERSION;
 let versionResolved: Promise<string> | null = null;

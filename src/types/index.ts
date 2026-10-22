@@ -45,6 +45,10 @@ export interface DownloadedSkin {
   size: number;
 }
 
+/// Champion name -> the skin names selected for it. Multiple skins may be
+/// selected per champion; Apply reduces each champion to a single skin.
+export type SkinSelection = Record<string, string[]>;
+
 export interface CustomEntry {
   name: string;
   file_path: string;

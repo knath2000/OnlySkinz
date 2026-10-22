@@ -13,7 +13,9 @@ src-tauri/binaries/
 # Misc
 reference/
 venv/
-docs/
+# Docs: track design + troubleshooting notes, but not scratch output.
+docs/*
+!docs/*.md
 
 # mod-tools build artifacts
 mod-tools/build*/

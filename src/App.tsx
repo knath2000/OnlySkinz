@@ -25,17 +25,19 @@ import ChampionGrid from "./components/ChampionGrid";
 import ChampionDetail from "./components/ChampionDetail";
 import MySkins from "./components/MySkins";
 import SelectedSkins from "./components/SelectedSkins";
+import Favorites from "./components/Favorites";
+import { favoriteKey, loadFavorites, saveFavorites } from "./lib/favorites";
 import Customs from "./components/Customs";
 import Settings from "./components/Settings";
 import Toast from "./components/Toast";
 import UpdateBanner from "./components/UpdateBanner";
-import type { Champion } from "./types";
+import type { Champion, DownloadedSkin, SkinSelection } from "./types";
 import logo from "./assets/icon.png";
 
-type View = "champions" | "my-skins" | "selected" | "customs" | "settings";
+type View = "champions" | "my-skins" | "favorites" | "selected" | "customs" | "settings";
 
-const GOD_MODE_KEY = "zushi_god_mode";
-const GOD_LAST_KEY = "zushi_god_last_skin";
+const GOD_MODE_KEY = "onlyskinz_god_mode";
+const GOD_LAST_KEY = "onlyskinz_god_last_skin";
 
 // Base-skin name shared by a skin and all of its chromas, so GOD mode can avoid
 // re-applying the same skin group two games in a row (e.g. "Mecha Aatrox" and
@@ -44,9 +46,53 @@ function skinGroupName(skinName: string): string {
   return lookupChromaInfo(skinName)?.parentName ?? skinName;
 }
 
+/// Loads the persisted selection, upgrading the old one-skin-per-champion
+/// format (champion -> string) to the current champion -> string[] format.
+function parseSelection(raw: string | null): SkinSelection {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: SkinSelection = {};
+    for (const [championName, value] of Object.entries(parsed)) {
+      if (typeof value === "string") {
+        out[championName] = [value];
+      } else if (Array.isArray(value)) {
+        const skins = value.filter((v): v is string => typeof v === "string");
+        if (skins.length > 0) out[championName] = skins;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/// Picks a random candidate for a champion, avoiding the same skin group
+/// (base skin + its chromas) that was picked for that champion last time.
+/// The shared history is also used by GOD mode.
+function pickWithAntiRepeat(
+  championName: string,
+  candidates: DownloadedSkin[]
+): DownloadedSkin {
+  let history: Record<string, string> = {};
+  try {
+    history = JSON.parse(localStorage.getItem(GOD_LAST_KEY) ?? "{}");
+  } catch {}
+  const lastGroup = history[championName];
+  const pool = lastGroup
+    ? candidates.filter((c) => skinGroupName(c.skin_name) !== lastGroup)
+    : candidates;
+  const source = pool.length > 0 ? pool : candidates;
+  const pick = source[Math.floor(Math.random() * source.length)];
+  history[championName] = skinGroupName(pick.skin_name);
+  localStorage.setItem(GOD_LAST_KEY, JSON.stringify(history));
+  return pick;
+}
+
 const NAV_ITEMS: { id: View; label: string; icon: typeof Swords }[] = [
   { id: "champions", label: "Champions", icon: Swords },
   { id: "my-skins", label: "My Skins", icon: Layers },
+  { id: "favorites", label: "Favorites", icon: Star },
   { id: "selected", label: "Selected", icon: ListChecks },
   { id: "customs", label: "Customs", icon: Package },
   { id: "settings", label: "Settings", icon: SettingsIcon },
@@ -60,16 +106,13 @@ function App() {
   const update = useVersionCheck();
   const [view, setView] = useState<View>("champions");
   const [selectedChampion, setSelectedChampion] = useState<Champion | null>(null);
-  const [skinSelection, setSkinSelection] = useState<Record<string, string>>(() => {
-    try {
-      const raw = localStorage.getItem("zushi_skin_selection");
-      if (raw) return JSON.parse(raw) as Record<string, string>;
-    } catch {}
-    return {};
-  });
+  const [skinSelection, setSkinSelection] = useState<SkinSelection>(() =>
+    parseSelection(localStorage.getItem("onlyskinz_skin_selection"))
+  );
   const [appVersion, setAppVersion] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [godMode, setGodMode] = useState(() => localStorage.getItem(GOD_MODE_KEY) === "1");
+  const [favorites, setFavorites] = useState<Set<string>>(() => loadFavorites());
 
   useEffect(() => {
     getVersion()
@@ -111,14 +154,21 @@ function App() {
   }
 
   const handleApply = useCallback(async () => {
-    // Default behaviour: apply every selected skin plus enabled customs.
+    // lookupChromaInfo needs both caches so anti-repeat can resolve chromas to
+    // their base skin group; usually already warm from the mount preload.
+    await Promise.all([ensureSkinIds(), ensureChromaInfo()]).catch(() => {});
+
+    // Default behaviour: for every champion with a selection, apply one random
+    // selected skin. The overlay can only hold one skin per champion, so a
+    // multi-selection is reduced to a single (anti-repeat) pick per champion.
     const applyAll = () => {
       const skinPaths: string[] = [];
-      for (const [championName, skinName] of Object.entries(skinSelection)) {
-        const skin = dl.downloads.find(
-          (d) => d.champion_name === championName && d.skin_name === skinName
+      for (const [championName, skinNames] of Object.entries(skinSelection)) {
+        const candidates = dl.downloads.filter(
+          (d) => d.champion_name === championName && skinNames.includes(d.skin_name)
         );
-        if (skin) skinPaths.push(skin.zip_path);
+        if (candidates.length === 0) continue;
+        skinPaths.push(pickWithAntiRepeat(championName, candidates).zip_path);
       }
       const allPaths = [...skinPaths, ...customs.enabledPaths];
       if (allPaths.length > 0) patcher.apply(allPaths);
@@ -157,51 +207,54 @@ function App() {
         setToastMessage(`GOD mode: no downloaded skins for ${champion.name}.`);
         return;
       }
-
-      // lookupChromaInfo needs both caches to resolve chromas to their base skin.
-      await Promise.all([ensureSkinIds(), ensureChromaInfo()]).catch(() => {});
-
-      let history: Record<string, string> = {};
-      try {
-        history = JSON.parse(localStorage.getItem(GOD_LAST_KEY) ?? "{}");
-      } catch {}
-      const lastRaw = history[champion.name];
-      const lastGroup = lastRaw ? skinGroupName(lastRaw) : undefined;
-      const pool = candidates.filter((c) => skinGroupName(c.skin_name) !== lastGroup);
-      const source = pool.length > 0 ? pool : candidates;
-      const pick = source[Math.floor(Math.random() * source.length)];
-      history[champion.name] = skinGroupName(pick.skin_name);
-      localStorage.setItem(GOD_LAST_KEY, JSON.stringify(history));
-
+      const pick = pickWithAntiRepeat(champion.name, candidates);
       setToastMessage(`GOD mode: applied "${pick.skin_name}" for ${champion.name}.`);
       patcher.apply([pick.zip_path, ...customs.enabledPaths]);
       return;
     }
 
-    const skinName = champion ? skinSelection[champion.name] : undefined;
-    if (!champion || !skinName) {
+    // Normal champ select: draw a random one of the champion's selected skins
+    // (that is actually downloaded), never repeating the last game's group.
+    if (!champion) {
       applyAll();
       return;
     }
-
-    const skin = dl.downloads.find(
-      (d) => d.champion_name === champion.name && d.skin_name === skinName
+    const skinNames = skinSelection[champion.name] ?? [];
+    const candidates = dl.downloads.filter(
+      (d) => d.champion_name === champion.name && skinNames.includes(d.skin_name)
     );
-    if (!skin) {
-      setToastMessage(`${champion.name} picked, but "${skinName}" isn't downloaded.`);
+    if (candidates.length === 0) {
+      if (skinNames.length > 0) {
+        setToastMessage(`${champion.name} picked, but none of its selected skins are downloaded.`);
+      }
       applyAll();
       return;
     }
 
-    setToastMessage(`Champ select: applied "${skinName}" for ${champion.name}.`);
-    patcher.apply([skin.zip_path, ...customs.enabledPaths]);
+    const pick = pickWithAntiRepeat(champion.name, candidates);
+    setToastMessage(`Champ select: applied "${pick.skin_name}" for ${champion.name}.`);
+    patcher.apply([pick.zip_path, ...customs.enabledPaths]);
   }, [skinSelection, dl.downloads, customs.enabledPaths, patcher, godMode]);
 
   useEffect(() => {
-    localStorage.setItem("zushi_skin_selection", JSON.stringify(skinSelection));
+    localStorage.setItem("onlyskinz_skin_selection", JSON.stringify(skinSelection));
   }, [skinSelection]);
 
-  const skinCount = Object.keys(skinSelection).length;
+  useEffect(() => {
+    saveFavorites(favorites);
+  }, [favorites]);
+
+  const toggleFavorite = useCallback((championName: string, skinName: string) => {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      const key = favoriteKey(championName, skinName);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const skinCount = Object.values(skinSelection).reduce((n, names) => n + names.length, 0);
 
   const handleDownloadAll = useCallback(async () => {
     const [champions, skinIds] = await Promise.all([
@@ -267,6 +320,21 @@ function App() {
           selection={skinSelection}
           onSelectionChange={setSkinSelection}
           onDelete={dl.deleteSkin}
+          favorites={favorites}
+          onToggleFavorite={toggleFavorite}
+        />
+      );
+    }
+
+    if (view === "favorites") {
+      return (
+        <Favorites
+          downloads={dl.downloads}
+          patcherActive={patcher.isActive}
+          selection={skinSelection}
+          onSelectionChange={setSkinSelection}
+          favorites={favorites}
+          onToggleFavorite={toggleFavorite}
         />
       );
     }
@@ -308,8 +376,8 @@ function App() {
     <div className="bg-charcoal-400 relative flex h-screen">
       <aside className="border-border flex w-50 shrink-0 flex-col border-r">
         <div className="flex items-end gap-2.5 px-4 py-4 select-none">
-          <img src={logo} alt="Zushi" className="h-9 w-9" />
-          <span className="font-logo text-gold-400 text-4xl leading-6 uppercase">Zushi</span>
+          <img src={logo} alt="OnlySkinz" className="h-9 w-9" />
+          <span className="font-logo text-gold-400 text-4xl leading-6 uppercase">OnlySkinz</span>
         </div>
 
         <div className="border-border mx-3 border-b" />
@@ -338,7 +406,7 @@ function App() {
         <div className="mt-auto">
           <button
             onClick={() =>
-              invoke("open_url", { url: "https://github.com/Mouadzz/zushi" }).catch(() => {})
+              invoke("open_url", { url: "https://github.com/onlyleague/onlyskinz" }).catch(() => {})
             }
             className="text-ink-muted hover:text-gold-400 mx-2 mb-2 flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-2 text-sm transition-colors"
           >
@@ -348,7 +416,7 @@ function App() {
               fill="currentColor"
               className="text-gold-400 shrink-0"
             />
-            <span className="whitespace-nowrap">Star Zushi on GitHub</span>
+            <span className="whitespace-nowrap">Star OnlySkinz on GitHub</span>
           </button>
 
           {update.updateAvailable && update.latestVersion ? (

@@ -96,7 +96,7 @@ fn relaunch_as_admin() {
             &mut auth,
         );
         if status != mac_auth::SUCCESS {
-            eprintln!("[zushi] AuthorizationCreate failed ({}), falling back to osascript", status);
+            eprintln!("[onlyskinz] AuthorizationCreate failed ({}), falling back to osascript", status);
             relaunch_via_osascript();
             return;
         }
@@ -125,7 +125,7 @@ fn relaunch_as_admin() {
             ptr::null_mut(),
         );
         if status != mac_auth::SUCCESS {
-            eprintln!("[zushi] Authorization denied or cancelled ({})", status);
+            eprintln!("[onlyskinz] Authorization denied or cancelled ({})", status);
             mac_auth::AuthorizationFree(auth, mac_auth::FLAGS_DESTROY_RIGHTS);
             std::process::exit(1);
         }
@@ -149,12 +149,12 @@ fn relaunch_as_admin() {
         );
 
         if status != mac_auth::SUCCESS {
-            eprintln!("[zushi] AuthorizationExecuteWithPrivileges failed ({})", status);
+            eprintln!("[onlyskinz] AuthorizationExecuteWithPrivileges failed ({})", status);
             mac_auth::AuthorizationFree(auth, mac_auth::FLAGS_DESTROY_RIGHTS);
             std::process::exit(1);
         }
 
-        eprintln!("[zushi] Root process launched, waiting...");
+        eprintln!("[onlyskinz] Root process launched, waiting...");
 
         // Wait for the root process to exit by reading from the pipe until EOF
         if !pipe.is_null() {
@@ -191,7 +191,7 @@ fn relaunch_via_osascript() {
         osa_escaped
     );
 
-    eprintln!("[zushi] Falling back to osascript relaunch");
+    eprintln!("[onlyskinz] Falling back to osascript relaunch");
 
     let status = std::process::Command::new("osascript")
         .arg("-e")
@@ -210,7 +210,7 @@ pub fn run() {
         return;
     }
 
-    eprintln!("[zushi] Running as root (euid=0)");
+    eprintln!("[onlyskinz] Running as root (euid=0)");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

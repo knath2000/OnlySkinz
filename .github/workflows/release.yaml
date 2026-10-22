@@ -62,7 +62,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: zushi-${{ matrix.label }}
+          name: onlyskinz-${{ matrix.label }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
 
   release:
@@ -86,7 +86,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}-${{ github.run_number }}
-          name: Zushi v${{ steps.version.outputs.version }}
+          name: OnlySkinz v${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
           generate_release_notes: true

@@ -36,6 +36,7 @@ add_library(mod-tools-lib STATIC
     lib/io/sys.hpp
 
     lib/patcher/patcher.hpp
+    lib/patcher/build_id.cpp
     lib/patcher/patcher_macos_amd64.cpp
     lib/patcher/patcher_macos_arm64.cpp
     lib/patcher/utility/delay.hpp

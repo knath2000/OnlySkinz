@@ -12,11 +12,16 @@ import {
   ensureSkinIds,
   ensureRepoZips,
   ensureChromaInfo,
+  ensureSkinCatalog,
+  refreshCatalog,
+  getCatalogAgeMs,
   lookupChromaInfo,
   getSkinsForChampion,
   skinDownloadUrl,
 } from "./hooks/useSkinData";
+import { CATALOG_TTL } from "./lib/cache";
 import { useVersionCheck } from "./hooks/useVersionCheck";
+import { useGameUpdate } from "./hooks/useGameUpdate";
 import { getChampSelectChampion } from "./lib/commands";
 import StatusBar from "./components/StatusBar";
 import DownloadBar from "./components/DownloadBar";
@@ -31,6 +36,7 @@ import Customs from "./components/Customs";
 import Settings from "./components/Settings";
 import Toast from "./components/Toast";
 import UpdateBanner from "./components/UpdateBanner";
+import GameUpdateBanner from "./components/GameUpdateBanner";
 import type { Champion, DownloadedSkin, SkinSelection } from "./types";
 import logo from "./assets/icon.png";
 
@@ -70,10 +76,7 @@ function parseSelection(raw: string | null): SkinSelection {
 /// Picks a random candidate for a champion, avoiding the same skin group
 /// (base skin + its chromas) that was picked for that champion last time.
 /// The shared history is also used by GOD mode.
-function pickWithAntiRepeat(
-  championName: string,
-  candidates: DownloadedSkin[]
-): DownloadedSkin {
+function pickWithAntiRepeat(championName: string, candidates: DownloadedSkin[]): DownloadedSkin {
   let history: Record<string, string> = {};
   try {
     history = JSON.parse(localStorage.getItem(GOD_LAST_KEY) ?? "{}");
@@ -104,6 +107,7 @@ function App() {
   const dl = useDownloads();
   const customs = useCustoms();
   const update = useVersionCheck();
+  const gameUpdate = useGameUpdate();
   const [view, setView] = useState<View>("champions");
   const [selectedChampion, setSelectedChampion] = useState<Champion | null>(null);
   const [skinSelection, setSkinSelection] = useState<SkinSelection>(() =>
@@ -113,6 +117,14 @@ function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [godMode, setGodMode] = useState(() => localStorage.getItem(GOD_MODE_KEY) === "1");
   const [favorites, setFavorites] = useState<Set<string>>(() => loadFavorites());
+  const [dismissedLeague, setDismissedLeague] = useState(false);
+  const [dismissedAppUpdate, setDismissedAppUpdate] = useState(false);
+
+  const patcherError =
+    typeof patcher.status === "object" && "Error" in patcher.status ? patcher.status.Error : null;
+  const appNeedsUpdate = Boolean(
+    patcherError && patcherError.toLowerCase().includes("needs an update")
+  );
 
   useEffect(() => {
     getVersion()
@@ -136,6 +148,26 @@ function App() {
     ensureSkinIds().catch(() => {});
     ensureRepoZips().catch(() => {});
     ensureChromaInfo().catch(() => {});
+    ensureSkinCatalog().catch(() => {});
+  }, []);
+
+  // Revalidate the catalog while the app stays open, so a patch released
+  // mid-session is picked up without a restart. The TTL gate keeps this to at
+  // most one refresh per CATALOG_TTL (and bounds the rate-limited repo fetch).
+  useEffect(() => {
+    const maybeRefresh = () => {
+      const age = getCatalogAgeMs();
+      if (age !== null && age > CATALOG_TTL) void refreshCatalog().catch(() => {});
+    };
+    const id = setInterval(maybeRefresh, 30 * 60 * 1000);
+    const win = getCurrentWebviewWindow();
+    const unlisten = win.onFocusChanged(({ payload: focused }) => {
+      if (focused) maybeRefresh();
+    });
+    return () => {
+      clearInterval(id);
+      unlisten.then((off) => off()).catch(() => {});
+    };
   }, []);
 
   // Surface patcher errors as toast
@@ -147,6 +179,35 @@ function App() {
   useEffect(() => {
     if (customs.error) setToastMessage(customs.error);
   }, [customs.error]);
+
+  // Re-check the game build once the path is known, and again whenever the
+  // patcher goes idle — an Apply just finished and may have refreshed it.
+  useEffect(() => {
+    gameUpdate.refresh();
+  }, [gamePath, gameUpdate.refresh]);
+
+  useEffect(() => {
+    if (!patcher.isActive) gameUpdate.refresh();
+  }, [patcher.isActive, gameUpdate.refresh]);
+
+  // Heads-up the first time a patch is detected in this session.
+  useEffect(() => {
+    if (gameUpdate.leagueUpdated) {
+      setToastMessage("League was updated — re-apply your skins before playing.");
+    }
+  }, [gameUpdate.leagueUpdated]);
+
+  // Let each banner be dismissed for the session, but re-arm it if the
+  // underlying condition clears and then returns.
+  useEffect(() => {
+    if (!gameUpdate.leagueUpdated) setDismissedLeague(false);
+  }, [gameUpdate.leagueUpdated]);
+
+  // Re-arm the update notice whenever a (new) patcher error appears, so a second
+  // failed Apply shows it again.
+  useEffect(() => {
+    setDismissedAppUpdate(false);
+  }, [patcherError]);
 
   function handleNavClick(id: View): void {
     setView(id);
@@ -256,6 +317,16 @@ function App() {
 
   const skinCount = Object.values(skinSelection).reduce((n, names) => n + names.length, 0);
 
+  // "Re-apply" from the League-updated banner. Re-applying rebuilds the overlay
+  // against the current build, which is the actual fix for a stale overlay.
+  const handleReapply = useCallback(() => {
+    if (!godMode && skinCount === 0 && customs.enabledCount === 0) {
+      setToastMessage("Select skins to apply first.");
+      return;
+    }
+    handleApply();
+  }, [godMode, skinCount, customs.enabledCount, handleApply]);
+
   const handleDownloadAll = useCallback(async () => {
     const [champions, skinIds] = await Promise.all([
       ensureChampions(),
@@ -295,6 +366,7 @@ function App() {
               await dl.refresh();
             }}
             onCustomsCleared={customs.refresh}
+            onRefreshCatalog={refreshCatalog}
           />
         </div>
       );
@@ -430,6 +502,21 @@ function App() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {appNeedsUpdate && !dismissedAppUpdate && (
+          <GameUpdateBanner
+            variant="app-update"
+            onAction={() => invoke("open_url", { url: update.releasesUrl }).catch(() => {})}
+            onDismiss={() => setDismissedAppUpdate(true)}
+          />
+        )}
+        {!appNeedsUpdate && gameUpdate.leagueUpdated && !dismissedLeague && (
+          <GameUpdateBanner
+            variant="reapply"
+            onAction={handleReapply}
+            onDismiss={() => setDismissedLeague(true)}
+          />
+        )}
+
         <main className="flex flex-1 flex-col overflow-hidden">{renderContent()}</main>
 
         <DownloadBar downloading={dl.downloading} />

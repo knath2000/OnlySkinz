@@ -1,11 +1,14 @@
 import { useState, useEffect, useMemo } from "react";
 import { Star, Check, Search } from "lucide-react";
 import { lookupChromaInfo, ensureChromaInfo } from "../hooks/useSkinData";
+import { useCatalogVersion } from "../lib/catalog";
 import { SkinThumb, ChampAvatar } from "./SkinMedia";
 import { parseFavoriteKey } from "../lib/favorites";
 import type { DownloadedSkin, SkinSelection } from "../types";
 
 function useChromaReady(): boolean {
+  // Re-resolve chroma info when the catalog is refreshed.
+  const version = useCatalogVersion();
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -17,7 +20,7 @@ function useChromaReady(): boolean {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [version]);
   return ready;
 }
 
@@ -61,9 +64,8 @@ export default function Favorites({
       .map((key) => {
         const { championName, skinName } = parseFavoriteKey(key);
         const dl =
-          downloads.find(
-            (d) => d.champion_name === championName && d.skin_name === skinName
-          ) ?? null;
+          downloads.find((d) => d.champion_name === championName && d.skin_name === skinName) ??
+          null;
         return { key, championName, skinName, dl, chroma: lookupChromaInfo(skinName) };
       })
       .sort(
@@ -93,9 +95,7 @@ export default function Favorites({
           </div>
           <div>
             <p className="text-ink-secondary text-sm">No favorites yet</p>
-            <p className="text-ink-muted mt-1 text-xs">
-              Star skins in My Skins to pin them here
-            </p>
+            <p className="text-ink-muted mt-1 text-xs">Star skins in My Skins to pin them here</p>
           </div>
         </div>
       </div>
@@ -215,7 +215,12 @@ export default function Favorites({
                       onClick={() => onToggleFavorite(championName, skinName)}
                       className="border-border text-ink-secondary hover:border-gold-400 hover:text-gold-400 flex w-fit cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors"
                     >
-                      <Star size={12} strokeWidth={2} fill="currentColor" className="text-gold-400" />
+                      <Star
+                        size={12}
+                        strokeWidth={2}
+                        fill="currentColor"
+                        className="text-gold-400"
+                      />
                       Unfavorite
                     </button>
                   </div>

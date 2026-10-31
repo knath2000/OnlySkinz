@@ -1,4 +1,7 @@
 const DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24 hours
+// Catalog metadata (champions, skin ids, chromas) changes when Riot ships a
+// patch, so it is revalidated more aggressively than the rate-limited repo tree.
+export const CATALOG_TTL = 6 * 60 * 60 * 1000; // 6 hours
 
 interface CacheEntry<T> {
   data: T;
@@ -37,5 +40,17 @@ export function setCache<T>(key: string, data: T): void {
     localStorage.setItem(key, JSON.stringify(entry));
   } catch {
     // localStorage full or unavailable - ignore
+  }
+}
+
+/** Age of a cache entry in ms, or null if absent/unreadable. Ignores TTL. */
+export function getCacheAge(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const entry: CacheEntry<unknown> = JSON.parse(raw);
+    return Date.now() - entry.timestamp;
+  } catch {
+    return null;
   }
 }

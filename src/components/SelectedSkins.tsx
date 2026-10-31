@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Layers, Check, X } from "lucide-react";
 import { lookupChromaInfo, ensureChromaInfo, ensureSkinIds } from "../hooks/useSkinData";
+import { useCatalogVersion } from "../lib/catalog";
 import { SkinThumb, ChampAvatar } from "./SkinMedia";
 import type { DownloadedSkin, SkinSelection } from "../types";
 
@@ -12,6 +13,8 @@ interface SelectedSkinsProps {
 }
 
 function useChromaReady(): boolean {
+  // Re-resolve chroma info when the catalog is refreshed.
+  const version = useCatalogVersion();
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -24,7 +27,7 @@ function useChromaReady(): boolean {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [version]);
   return ready;
 }
 
@@ -62,9 +65,8 @@ export default function SelectedSkins({
     for (const [championName, skinNames] of Object.entries(selection)) {
       for (const skinName of skinNames) {
         const dl =
-          downloads.find(
-            (d) => d.champion_name === championName && d.skin_name === skinName
-          ) ?? null;
+          downloads.find((d) => d.champion_name === championName && d.skin_name === skinName) ??
+          null;
         out.push({ championName, skinName, dl, chroma: lookupChromaInfo(skinName) });
       }
     }
@@ -92,9 +94,7 @@ export default function SelectedSkins({
           </div>
           <div>
             <p className="text-ink-secondary text-sm">No skins selected yet</p>
-            <p className="text-ink-muted mt-1 text-xs">
-              Pick skins in My Skins to see them here
-            </p>
+            <p className="text-ink-muted mt-1 text-xs">Pick skins in My Skins to see them here</p>
           </div>
         </div>
       </div>

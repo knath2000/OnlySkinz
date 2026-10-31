@@ -1,8 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Power, FolderOpen, Trash2, Loader2, HardDrive, Sparkles } from "lucide-react";
-import { getSkinsDirSize, getWorkDirSize, getCustomsDirSize, clearAllSkins, clearWorkDir, clearAllCustoms } from "../lib/commands";
+import { Power, FolderOpen, Trash2, Loader2, HardDrive, Sparkles, RefreshCw } from "lucide-react";
+import {
+  getSkinsDirSize,
+  getWorkDirSize,
+  getCustomsDirSize,
+  clearAllSkins,
+  clearWorkDir,
+  clearAllCustoms,
+} from "../lib/commands";
+import { getCatalogAgeMs } from "../hooks/useSkinData";
 import Toast from "./Toast";
 
 interface SettingsProps {
@@ -14,6 +22,18 @@ interface SettingsProps {
   onTestInjector: (mode: string) => Promise<void>;
   onSkinsCleared: () => Promise<void>;
   onCustomsCleared: () => Promise<void>;
+  onRefreshCatalog: () => Promise<void>;
+}
+
+/** Human-readable age for the persisted skin catalog. */
+function formatAge(ms: number | null): string {
+  if (ms === null) return "Not cached yet";
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "Updated just now";
+  if (mins < 60) return `Updated ${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `Updated ${hours}h ago`;
+  return `Updated ${Math.floor(hours / 24)}d ago`;
 }
 
 function formatSize(bytes: number): string {
@@ -32,6 +52,7 @@ export default function Settings({
   onTestInjector,
   onSkinsCleared,
   onCustomsCleared,
+  onRefreshCatalog,
 }: SettingsProps) {
   const [autoStart, setAutoStart] = useState(false);
   const [autoStartLoading, setAutoStartLoading] = useState(true);
@@ -46,6 +67,8 @@ export default function Settings({
   const [clearingContent, setClearingContent] = useState(false);
   const [clearingWork, setClearingWork] = useState(false);
   const [testingInjector, setTestingInjector] = useState(false);
+  const [refreshingCatalog, setRefreshingCatalog] = useState(false);
+  const [catalogAge, setCatalogAge] = useState<number | null>(() => getCatalogAgeMs());
 
   useEffect(() => {
     isEnabled()
@@ -57,7 +80,11 @@ export default function Settings({
   const refreshCache = useCallback(async () => {
     setCacheLoading(true);
     try {
-      const [s, w, c] = await Promise.all([getSkinsDirSize(), getWorkDirSize(), getCustomsDirSize()]);
+      const [s, w, c] = await Promise.all([
+        getSkinsDirSize(),
+        getWorkDirSize(),
+        getCustomsDirSize(),
+      ]);
       setSkinsSize(s);
       setWorkSize(w);
       setCustomsSize(c);
@@ -138,6 +165,17 @@ export default function Settings({
     setTestingInjector(true);
     await onTestInjector(mode);
     setTestingInjector(false);
+  };
+
+  const handleRefreshCatalog = async () => {
+    setRefreshingCatalog(true);
+    try {
+      await onRefreshCatalog();
+    } catch {
+      // ignore; a failed refresh keeps the previous catalog
+    }
+    setCatalogAge(getCatalogAgeMs());
+    setRefreshingCatalog(false);
   };
 
   const contentSize = skinsSize + customsSize;
@@ -233,6 +271,38 @@ export default function Settings({
         </div>
       </div>
 
+      {/* Catalog */}
+      <div className="mt-6 pb-2">
+        <span className="text-ink-muted text-[11px] font-medium tracking-wider uppercase select-none">
+          Skin Catalog
+        </span>
+      </div>
+
+      <div className="border-border flex items-center justify-between rounded-lg border px-4 py-3.5">
+        <div className="flex min-w-0 items-center gap-3">
+          <RefreshCw size={16} strokeWidth={1.5} className="text-ink-muted shrink-0" />
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-ink text-sm">Champions &amp; skins</span>
+            <span className="text-ink-muted text-xs">{formatAge(catalogAge)}</span>
+          </div>
+        </div>
+        <button
+          onClick={handleRefreshCatalog}
+          disabled={refreshingCatalog}
+          className="border-border text-ink-secondary hover:border-gold-400 hover:text-gold-400 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-40"
+        >
+          {refreshingCatalog ? (
+            <Loader2 size={13} strokeWidth={2} className="animate-spin" />
+          ) : (
+            <RefreshCw size={13} strokeWidth={1.5} />
+          )}
+          Refresh
+        </button>
+      </div>
+      <p className="text-ink-muted mt-2 px-1 text-xs">
+        Re-fetch the latest champions and skins from Riot and the community repository.
+      </p>
+
       {/* Storage */}
       <div className="mt-6 pb-2">
         <span className="text-ink-muted text-[11px] font-medium tracking-wider uppercase select-none">
@@ -279,7 +349,9 @@ export default function Settings({
         <div className="flex items-center justify-between px-4 py-3.5">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-ink text-sm">Patcher Data</span>
-            <span className="text-ink-muted text-xs">Temporary overlay files, rebuilt on apply</span>
+            <span className="text-ink-muted text-xs">
+              Temporary overlay files, rebuilt on apply
+            </span>
           </div>
           <div className="flex shrink-0 items-center gap-4">
             <span className="text-ink-secondary min-w-16 text-right text-sm tabular-nums">
@@ -313,7 +385,9 @@ export default function Settings({
       <div className="border-border flex items-center justify-between rounded-lg border px-4 py-3.5">
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="text-ink text-sm">Test injector only</span>
-          <span className="text-ink-muted text-xs">Launch the patcher without loading any mods</span>
+          <span className="text-ink-muted text-xs">
+            Launch the patcher without loading any mods
+          </span>
         </div>
         <div className="flex shrink-0 gap-1.5">
           {[

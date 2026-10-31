@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import type { Champion } from "../types";
-import { getCached, setCache } from "../lib/cache";
+import { getCached, setCache, CATALOG_TTL } from "../lib/cache";
+import { useCatalogVersion } from "../lib/catalog";
 
 // Fallback when the version lookup fails; updated to the live latest at runtime.
 const FALLBACK_VERSION = "16.12.1";
@@ -25,10 +26,10 @@ function indexChampions(list: Champion[]): void {
   championsByName = map;
 }
 
-function ensureVersion(): Promise<string> {
-  if (versionResolved) return versionResolved;
+function ensureVersion(force = false): Promise<string> {
+  if (!force && versionResolved) return versionResolved;
 
-  const cached = getCached<string>(VERSION_CACHE_KEY);
+  const cached = force ? null : getCached<string>(VERSION_CACHE_KEY, CATALOG_TTL);
   if (cached) {
     ddragonVersion = cached;
     versionResolved = Promise.resolve(cached);
@@ -54,18 +55,20 @@ export function splashUrl(championId: string, skinNum: number): string {
   return `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${championId}_${skinNum}.jpg`;
 }
 
-export function ensureChampions(): Promise<Champion[]> {
-  if (championsCache) return Promise.resolve(championsCache);
+export function ensureChampions(force = false): Promise<Champion[]> {
+  if (!force && championsCache) return Promise.resolve(championsCache);
 
-  return ensureVersion().then(() => {
-    const cached = getCached<Champion[]>(CACHE_KEY);
+  return ensureVersion(force).then(() => {
+    const cached = force ? null : getCached<Champion[]>(CACHE_KEY, CATALOG_TTL);
     if (cached) {
       championsCache = cached;
       indexChampions(cached);
       return cached;
     }
 
-    return fetch(`https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/data/en_US/champion.json`)
+    return fetch(
+      `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/data/en_US/champion.json`
+    )
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -98,19 +101,26 @@ export function findChampionByName(name: string): Champion | undefined {
 }
 
 export function useChampions() {
+  // Re-run the effect whenever the catalog is refreshed (module cache repopulated).
+  const version = useCatalogVersion();
   const [champions, setChampions] = useState<Champion[]>(championsCache ?? []);
   const [loading, setLoading] = useState(!championsCache);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    if (championsCache) return;
+    if (championsCache) {
+      setChampions(championsCache);
+      setLoading(false);
+      return;
+    }
 
+    setLoading(true);
     ensureChampions()
       .then((list) => setChampions(list))
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [version]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return champions;

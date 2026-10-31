@@ -1,11 +1,14 @@
 import { useState, useEffect, useMemo } from "react";
 import { Layers, Check, Info, X, Search, Star } from "lucide-react";
 import { lookupChromaInfo, ensureChromaInfo } from "../hooks/useSkinData";
+import { useCatalogVersion } from "../lib/catalog";
 import { SkinThumb, ChampAvatar } from "./SkinMedia";
 import { favoriteKey } from "../lib/favorites";
 import type { DownloadedSkin, SkinSelection } from "../types";
 
 function useChromaReady(): boolean {
+  // Re-resolve chroma info when the catalog is refreshed.
+  const version = useCatalogVersion();
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -17,7 +20,7 @@ function useChromaReady(): boolean {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [version]);
   return ready;
 }
 
@@ -222,9 +225,7 @@ export default function MySkins({
                     const anySelected = baseSelected || !!selectedChroma;
                     const baseClickable = !patcherActive && group.base !== null;
                     const baseFav = group.base
-                      ? favorites.has(
-                          favoriteKey(group.base.champion_name, group.base.skin_name)
-                        )
+                      ? favorites.has(favoriteKey(group.base.champion_name, group.base.skin_name))
                       : false;
 
                     const hasChromas = group.chromas.length > 0;
@@ -293,10 +294,7 @@ export default function MySkins({
                           {group.base && (
                             <button
                               onClick={() =>
-                                onToggleFavorite(
-                                  group.base!.champion_name,
-                                  group.base!.skin_name
-                                )
+                                onToggleFavorite(group.base!.champion_name, group.base!.skin_name)
                               }
                               className="bg-charcoal-500/80 hover:bg-charcoal-500 absolute right-1 bottom-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded-full shadow transition-colors"
                               title={baseFav ? "Remove from favorites" : "Add to favorites"}
@@ -380,9 +378,7 @@ export default function MySkins({
                                       onToggleFavorite(c.dl.champion_name, c.dl.skin_name)
                                     }
                                     className="flex h-3 w-4 cursor-pointer items-center justify-center"
-                                    title={
-                                      isFav ? "Remove from favorites" : "Add to favorites"
-                                    }
+                                    title={isFav ? "Remove from favorites" : "Add to favorites"}
                                   >
                                     <Star
                                       size={10}

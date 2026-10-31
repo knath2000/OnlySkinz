@@ -231,6 +231,7 @@ pub fn run() {
             commands::patcher::test_injector,
             commands::patcher::stop_patcher,
             commands::patcher::get_patcher_status,
+            commands::patcher::get_game_update_status,
             commands::patcher::get_work_dir_size,
             commands::patcher::clear_work_dir,
             commands::skins::download_skin,

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PatcherStatus, DownloadedSkin } from "../types";
+import type { PatcherStatus, DownloadedSkin, GameUpdateStatus } from "../types";
 
 export async function detectGamePath(): Promise<string | null> {
   return invoke<string | null>("detect_game_path");
@@ -39,6 +39,10 @@ export async function stopPatcher(): Promise<void> {
 
 export async function getPatcherStatus(): Promise<PatcherStatus> {
   return invoke<PatcherStatus>("get_patcher_status");
+}
+
+export async function getGameUpdateStatus(): Promise<GameUpdateStatus> {
+  return invoke<GameUpdateStatus>("get_game_update_status");
 }
 
 export async function downloadSkin(

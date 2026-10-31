@@ -45,6 +45,14 @@ export interface DownloadedSkin {
   size: number;
 }
 
+/// Whether the installed League build changed since skins were last applied.
+export interface GameUpdateStatus {
+  current_build: string | null;
+  applied_build: string | null;
+  league_updated: boolean;
+  overlay_stale: boolean;
+}
+
 /// Champion name -> the skin names selected for it. Multiple skins may be
 /// selected per champion; Apply reduces each champion to a single skin.
 export type SkinSelection = Record<string, string[]>;

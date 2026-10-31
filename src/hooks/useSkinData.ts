@@ -1,6 +1,22 @@
 import { useState, useEffect, useCallback } from "react";
-import { getCached, getStale, setCache } from "../lib/cache";
+import { getCached, getStale, setCache, getCacheAge, CATALOG_TTL } from "../lib/cache";
+import { notifyCatalog, useCatalogVersion } from "../lib/catalog";
+import { ensureChampions } from "./useChampions";
 import type { Champion, Skin, Chroma, SkinGroup } from "../types";
+
+// Shape of the CommunityDragon v1/skins.json entries we rely on. Used both for
+// chroma info and as a fallback skin catalog when the community repo lags.
+interface CdChroma {
+  id: number;
+  name?: string;
+  colors?: string[];
+}
+interface CdSkin {
+  id: number;
+  name: string;
+  isBase?: boolean;
+  chromas?: CdChroma[];
+}
 
 const SKIN_IDS_URL =
   "https://raw.githubusercontent.com/Alban1911/LeagueSkins/main/resources/en/skin_ids.json";
@@ -13,10 +29,32 @@ const SKIN_IDS_CACHE_KEY = "onlyskinz:skin_ids";
 // _v2 invalidates the stale name-based cache from older builds.
 const REPO_ZIPS_CACHE_KEY = "onlyskinz:repo_files_v2";
 const CHROMAS_CACHE_KEY = "onlyskinz:chromas";
+const CD_CATALOG_CACHE_KEY = "onlyskinz:cd_catalog_v1";
 
 let skinIdsCache: Record<string, string> | null = null;
 let repoZipsCache: Map<string, string> | null = null;
 let chromaInfoCache: Map<number, { colors: string[]; parentId: number }> | null = null;
+// champKey -> [skinId, name] pairs derived from CommunityDragon, used to surface
+// skins the community repo hasn't added yet.
+let cdCatalogCache: Map<number, [string, string][]> | null = null;
+// Shared in-flight fetch of the (large) CommunityDragon skins.json so chroma
+// info and the fallback catalog don't each download it.
+let cdSkinsPromise: Promise<Record<string, CdSkin>> | null = null;
+
+function fetchCdSkins(): Promise<Record<string, CdSkin>> {
+  if (!cdSkinsPromise) {
+    cdSkinsPromise = fetch(SKINS_JSON_URL)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .catch((err) => {
+        cdSkinsPromise = null;
+        throw err;
+      });
+  }
+  return cdSkinsPromise;
+}
 
 // Reverse indices over skinIdsCache so name-based lookups are O(1) instead of
 // scanning all ~9k entries on every call (My Skins does this per skin, per render).
@@ -50,10 +88,10 @@ function ensureSkinIndexes(): void {
   indexedFrom = skinIdsCache;
 }
 
-export function ensureSkinIds(): Promise<Record<string, string>> {
-  if (skinIdsCache) return Promise.resolve(skinIdsCache);
+export function ensureSkinIds(force = false): Promise<Record<string, string>> {
+  if (!force && skinIdsCache) return Promise.resolve(skinIdsCache);
 
-  const cached = getCached<Record<string, string>>(SKIN_IDS_CACHE_KEY);
+  const cached = force ? null : getCached<Record<string, string>>(SKIN_IDS_CACHE_KEY, CATALOG_TTL);
   if (cached) {
     skinIdsCache = cached;
     return Promise.resolve(cached);
@@ -79,10 +117,10 @@ export function ensureSkinIds(): Promise<Record<string, string>> {
     });
 }
 
-export function ensureRepoZips(): Promise<Map<string, string>> {
-  if (repoZipsCache) return Promise.resolve(repoZipsCache);
+export function ensureRepoZips(force = false): Promise<Map<string, string>> {
+  if (!force && repoZipsCache) return Promise.resolve(repoZipsCache);
 
-  const cached = getCached<[string, string][]>(REPO_ZIPS_CACHE_KEY);
+  const cached = force ? null : getCached<[string, string][]>(REPO_ZIPS_CACHE_KEY);
   if (cached) {
     repoZipsCache = new Map(cached);
     return Promise.resolve(repoZipsCache);
@@ -124,21 +162,21 @@ export function ensureRepoZips(): Promise<Map<string, string>> {
     });
 }
 
-export function ensureChromaInfo(): Promise<Map<number, { colors: string[]; parentId: number }>> {
-  if (chromaInfoCache) return Promise.resolve(chromaInfoCache);
+export function ensureChromaInfo(
+  force = false
+): Promise<Map<number, { colors: string[]; parentId: number }>> {
+  if (!force && chromaInfoCache) return Promise.resolve(chromaInfoCache);
 
-  const cached = getCached<[number, { colors: string[]; parentId: number }][]>(CHROMAS_CACHE_KEY);
+  const cached = force
+    ? null
+    : getCached<[number, { colors: string[]; parentId: number }][]>(CHROMAS_CACHE_KEY, CATALOG_TTL);
   if (cached) {
     chromaInfoCache = new Map(cached);
     return Promise.resolve(chromaInfoCache);
   }
 
-  return fetch(SKINS_JSON_URL)
-    .then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    })
-    .then((data: Record<string, { id: number; chromas?: { id: number; colors?: string[] }[] }>) => {
+  return fetchCdSkins()
+    .then((data) => {
       const map = new Map<number, { colors: string[]; parentId: number }>();
       for (const [, skin] of Object.entries(data)) {
         if (!skin.chromas) continue;
@@ -151,8 +189,58 @@ export function ensureChromaInfo(): Promise<Map<number, { colors: string[]; pare
       return map;
     })
     .catch(() => {
-      chromaInfoCache = new Map();
+      // Keep the previous chroma data if a refresh fails.
+      const stale = getStale<[number, { colors: string[]; parentId: number }][]>(CHROMAS_CACHE_KEY);
+      chromaInfoCache = stale ? new Map(stale) : new Map();
       return chromaInfoCache;
+    });
+}
+
+/**
+ * Builds a per-champion skin catalog from CommunityDragon. Used only to top up
+ * the community repo's `skin_ids.json`, so a newly released skin is visible
+ * (as "not available") before the repo maintainer adds it. Mirrors the repo's
+ * own rules: skip the default skin (num 0) and its chromas.
+ */
+export function ensureSkinCatalog(force = false): Promise<Map<number, [string, string][]>> {
+  if (!force && cdCatalogCache) return Promise.resolve(cdCatalogCache);
+
+  const cached = force
+    ? null
+    : getCached<[number, [string, string][]][]>(CD_CATALOG_CACHE_KEY, CATALOG_TTL);
+  if (cached) {
+    cdCatalogCache = new Map(cached);
+    return Promise.resolve(cdCatalogCache);
+  }
+
+  return fetchCdSkins()
+    .then((data) => {
+      const byChamp = new Map<number, [string, string][]>();
+      const add = (id: number, name: string) => {
+        const champKey = Math.floor(id / 1000);
+        const entry: [string, string] = [String(id), name];
+        const bucket = byChamp.get(champKey);
+        if (bucket) bucket.push(entry);
+        else byChamp.set(champKey, [entry]);
+      };
+      for (const skin of Object.values(data)) {
+        // Default skin: skip it and all of its chromas, matching getSkinsForChampion.
+        if (skin.isBase || skin.id % 1000 === 0) continue;
+        add(skin.id, skin.name);
+        for (const c of skin.chromas ?? []) {
+          if (c.id % 1000 === 0) continue;
+          add(c.id, c.name ?? skin.name);
+        }
+      }
+      cdCatalogCache = byChamp;
+      setCache(CD_CATALOG_CACHE_KEY, [...byChamp.entries()]);
+      return byChamp;
+    })
+    .catch(() => {
+      // Keep the previous fallback catalog if a refresh fails.
+      const stale = getStale<[number, [string, string][]][]>(CD_CATALOG_CACHE_KEY);
+      cdCatalogCache = stale ? new Map(stale) : new Map();
+      return cdCatalogCache;
     });
 }
 
@@ -164,10 +252,21 @@ export function getSkinsForChampion(champion: Champion, skinIds: Record<string, 
   // Prefer the champKey index; fall back to a full scan if the caller passed a
   // skinIds object the index wasn't built from.
   ensureSkinIndexes();
-  const entries: [string, string][] =
+  const repoEntries: [string, string][] =
     indexedFrom === skinIds && skinsByChampKey
       ? (skinsByChampKey.get(champKey) ?? [])
       : Object.entries(skinIds).filter(([id]) => Math.floor(parseInt(id, 10) / 1000) === champKey);
+
+  // Top up with CommunityDragon entries the repo doesn't list yet so a new skin
+  // is visible immediately. These have no repo file, so they surface as
+  // "not available" until the community repo catches up.
+  let entries = repoEntries;
+  const cdEntries = cdCatalogCache?.get(champKey);
+  if (cdEntries && cdEntries.length > 0) {
+    const have = new Set(repoEntries.map(([id]) => id));
+    const extra = cdEntries.filter(([id]) => !have.has(id));
+    if (extra.length > 0) entries = [...repoEntries, ...extra];
+  }
 
   const skins: Skin[] = [];
   for (const [id, name] of entries) {
@@ -324,7 +423,49 @@ export function isSkinAvailable(skin: Skin): boolean {
   return repoZipsCache.has(skin.id);
 }
 
+let refreshInFlight: Promise<void> | null = null;
+
+/**
+ * Force a full catalog refresh: refetch champions and skins, bypassing every
+ * cache, then notify subscribers so the UI re-renders against fresh data. Used
+ * by the Settings "Refresh" button and by background revalidation.
+ *
+ * The `ensure*` helpers fall back to the previous persisted data on failure, so
+ * a failed refresh (offline, GitHub rate limit) never empties the app.
+ */
+export function refreshCatalog(): Promise<void> {
+  // Dedupe overlapping refreshes (e.g. the button and a focus revalidation).
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    // Drop the shared CommunityDragon fetch so both derived caches refetch it.
+    cdSkinsPromise = null;
+    await Promise.allSettled([
+      ensureChampions(true),
+      ensureSkinIds(true),
+      ensureRepoZips(true),
+      ensureChromaInfo(true),
+      ensureSkinCatalog(true),
+    ]);
+    notifyCatalog();
+  })();
+
+  void refreshInFlight
+    .finally(() => {
+      refreshInFlight = null;
+    })
+    .catch(() => {});
+  return refreshInFlight;
+}
+
+/** Age of the persisted skin catalog in ms, or null if never fetched. */
+export function getCatalogAgeMs(): number | null {
+  return getCacheAge(SKIN_IDS_CACHE_KEY);
+}
+
 export function useSkinData(champion: Champion | null) {
+  // Re-run the effects whenever the catalog is refreshed.
+  const version = useCatalogVersion();
   const [skinIds, setSkinIds] = useState<Record<string, string> | null>(skinIdsCache);
   const [skins, setSkins] = useState<Skin[]>([]);
   const [groups, setGroups] = useState<SkinGroup[]>([]);
@@ -336,17 +477,20 @@ export function useSkinData(champion: Champion | null) {
       setSkinIds(skinIdsCache);
       setLoading(false);
       void ensureChromaInfo();
+      void ensureSkinCatalog();
       return;
     }
 
+    setLoading(true);
     void ensureChromaInfo();
+    void ensureSkinCatalog();
     Promise.all([ensureSkinIds(), ensureRepoZips()])
       .then(([ids]) => {
         setSkinIds(ids);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [version]);
 
   useEffect(() => {
     if (!champion || !skinIds) {

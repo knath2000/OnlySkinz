@@ -1,4 +1,5 @@
 use crate::state::{AppState, PatcherStatus};
+use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,17 @@ use tauri::{AppHandle, Manager, State};
 const BUILD_STAMP_NAME: &str = ".onlyskinz-build";
 
 const STALE_OVERLAY_MSG: &str = "Game was updated since these skins were applied; re-apply your skins.";
+
+/// Records the game build the current overlay was built against. Kept separate
+/// from the overlay's own stamp so a patch is still detected after the stale
+/// overlay has been swept.
+const APPLIED_BUILD_FILE: &str = "last_applied_build";
+
+/// Shown when the injector's byte-pattern scan no longer matches the game
+/// binary. Unlike a stale overlay, this cannot be fixed by re-applying — the app
+/// itself needs updating for the new build.
+const INJECTOR_INCOMPATIBLE_MSG: &str =
+    "This League patch changed the game binary. OnlySkinz needs an update to work with it. Download the latest version.";
 
 /// Identifies the installed League build. Riot rewrites the release ID on every
 /// patch, so a change here means any existing overlay WAD is stale.
@@ -108,6 +120,37 @@ pub fn sweep_stale_overlay_for(app: &AppHandle, game_path: &str) {
     sweep_stale_overlay(app, game_path);
 }
 
+/// Whether the installed game has changed since skins were last applied.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GameUpdateStatus {
+    pub current_build: Option<String>,
+    pub applied_build: Option<String>,
+    /// Both identities are known and differ: the game was patched.
+    pub league_updated: bool,
+    /// An overlay exists on disk stamped for a different build.
+    pub overlay_stale: bool,
+}
+
+/// Baseline build recorded at the last successful Apply, scoped to one install
+/// so switching game paths does not read as a patch.
+fn read_baseline(base: &Path, game_path: &str) -> Option<String> {
+    let raw = fs::read_to_string(base.join(APPLIED_BUILD_FILE)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if value.get("game_path").and_then(|v| v.as_str()) != Some(game_path) {
+        return None;
+    }
+    value
+        .get("build")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+fn write_baseline(base: &Path, game_path: &str, build: &str) {
+    let value = serde_json::json!({ "game_path": game_path, "build": build });
+    let _ = fs::write(base.join(APPLIED_BUILD_FILE), value.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +240,19 @@ mod tests {
         fs::create_dir_all(&overlay).unwrap();
         fs::write(overlay.join(BUILD_STAMP_NAME), "release:AAAA\n").unwrap();
         assert!(!overlay_is_stale(&overlay, game.to_str().unwrap()));
+    }
+
+    #[test]
+    fn baseline_round_trips_and_is_scoped_to_one_install() {
+        let base = std::env::temp_dir().join("onlyskinz-baseline-test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        assert_eq!(read_baseline(&base, "/game/A"), None);
+        write_baseline(&base, "/game/A", "release:AAAA");
+        assert_eq!(read_baseline(&base, "/game/A").as_deref(), Some("release:AAAA"));
+        // A different install must not inherit the baseline.
+        assert_eq!(read_baseline(&base, "/game/B"), None);
     }
 }
 
@@ -624,6 +680,12 @@ fn do_apply_skins_bg(
         }
     })?;
 
+    // Remember the build this overlay was made for, so a later game patch is
+    // still detected after the stale overlay has been swept.
+    if let Some(build) = game_build_id(&game_path) {
+        write_baseline(&base, &game_path, &build);
+    }
+
     let imported_map_mod = has_map_wad(&installed_dir);
     let generated_map_wads = overlay_map_wads(&overlay_dir);
     diagnostic_log(
@@ -694,6 +756,10 @@ fn do_apply_skins_bg(
     // bury the reason the user needs.
     let stale_overlay = Arc::new(AtomicBool::new(false));
     let stale_overlay_out = stale_overlay.clone();
+    // Set when the injector reports that it cannot locate wad_verify in the game
+    // binary, which means a League patch moved it and the app needs updating.
+    let injector_incompatible = Arc::new(AtomicBool::new(false));
+    let incompatible_stdout = injector_incompatible.clone();
     let stdout_thread = std::thread::spawn(move || {
         if let Some(out) = stdout {
             let reader = BufReader::new(out);
@@ -715,9 +781,13 @@ fn do_apply_skins_bg(
                         _ => None,
                     };
                     if let Some(status) = new_status {
-                        if let Ok(mut s) = state_arc.lock() {
-                            if s.patcher_gen == gen {
-                                s.patcher_status = status;
+                        // Once the injector is known to be incompatible, later
+                        // retry status lines must not clobber the message.
+                        if !incompatible_stdout.load(Ordering::SeqCst) {
+                            if let Ok(mut s) = state_arc.lock() {
+                                if s.patcher_gen == gen {
+                                    s.patcher_status = status;
+                                }
                             }
                         }
                     }
@@ -727,12 +797,31 @@ fn do_apply_skins_bg(
     });
 
     let stderr_log = log_path.clone();
+    let state_stderr = state.clone();
+    let incompatible_stderr = injector_incompatible.clone();
     let stderr_thread = std::thread::spawn(move || {
         if let Some(err) = stderr {
             let reader = BufReader::new(err);
             for line in reader.lines().map_while(Result::ok) {
                 eprintln!("[onlyskinz] mod-tools err: {}", line);
                 diagnostic_log(&stderr_log, format!("stderr: {}", line));
+                // The injector finds wad_verify by scanning the game binary for a
+                // byte pattern. A League patch can move it, in which case no
+                // overlay will ever apply and the app itself needs updating.
+                // Retrying is pointless, so report it and ask the patcher to exit.
+                if line.contains("Failed to find wad_verify") {
+                    incompatible_stderr.store(true, Ordering::SeqCst);
+                    if let Ok(mut s) = state_stderr.lock() {
+                        if s.patcher_gen == gen {
+                            s.patcher_status =
+                                PatcherStatus::Error(INJECTOR_INCOMPATIBLE_MSG.to_string());
+                            if let Some(mut pipe) = s.patcher_stdin.take() {
+                                pipe.write_all(b"\n").ok();
+                                drop(pipe);
+                            }
+                        }
+                    }
+                }
             }
         }
     });
@@ -748,6 +837,10 @@ fn do_apply_skins_bg(
         if s.patcher_gen == gen {
             if stale_overlay.load(Ordering::SeqCst) {
                 // Already reported with its explanation by the stdout thread.
+            } else if injector_incompatible.load(Ordering::SeqCst) {
+                // Already reported by the stderr thread; keep the message instead
+                // of the generic "exited unexpectedly".
+                s.patcher_status = PatcherStatus::Error(INJECTOR_INCOMPATIBLE_MSG.to_string());
             } else if !exit_status.success() {
                 use std::os::unix::process::ExitStatusExt;
                 let detail = if let Some(code) = exit_status.code() {
@@ -797,6 +890,36 @@ pub fn stop_patcher(state: State<'_, Arc<Mutex<AppState>>>) -> Result<(), String
 pub fn get_patcher_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<PatcherStatus, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(s.patcher_status.clone())
+}
+
+/// Reports whether the installed game build changed since skins were last
+/// applied, and whether an on-disk overlay is stale. Cheap (reads Game.ok and a
+/// small file), so the UI can poll it and re-check on focus.
+#[tauri::command]
+pub fn get_game_update_status(
+    app: AppHandle,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<GameUpdateStatus, String> {
+    let game_path = state.lock().map_err(|e| e.to_string())?.game_path.clone();
+    let Some(game_path) = game_path else {
+        return Ok(GameUpdateStatus::default());
+    };
+
+    let base = work_dir(&app);
+    let current_build = game_build_id(&game_path);
+    let applied_build = read_baseline(&base, &game_path);
+    let overlay_stale = overlay_is_stale(&base.join("overlay"), &game_path);
+    let league_updated = match (&applied_build, &current_build) {
+        (Some(applied), Some(current)) => applied != current,
+        _ => false,
+    };
+
+    Ok(GameUpdateStatus {
+        current_build,
+        applied_build,
+        league_updated,
+        overlay_stale,
+    })
 }
 
 #[tauri::command]

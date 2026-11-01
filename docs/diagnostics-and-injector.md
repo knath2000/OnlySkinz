@@ -36,6 +36,34 @@ The trace includes archive paths, import and overlay command output, patcher PID
 
 The preflight guard also refuses to launch the injector when a non-map mod generates map WADs.
 
+#### Preflight false positive: mod-supplied map WADs
+
+The guard originally decided whether a mod was a "map mod" with `has_map_wad()`, which
+scanned the installed mod folder for a path containing `/Maps/`. Imported mods are
+stored flattened as `installed/mod_N/WAD/<Name>.wad.client`, so that component never
+survives import and the check always returned `false`. Any overlay map WAD was then
+flagged as unrelated — even when the mod intentionally supplied it.
+
+This misfired on **Revenant Reign Viego**, which ships a `Common.wad.client`. The only
+`Common.wad.client` in the game lives at `DATA/FINAL/Maps/Shipping/Common.wad.client`,
+so `mkoverlay` correctly rebased the mod's `Common` there and the overlay legitimately
+contained a map WAD:
+
+```text
+Writing wad: WAD/Common.wad.client
+Writing wad: DATA/FINAL/Maps/Shipping/Common.wad.client
+overlay preflight: imported_map_mod=false generated_map_wads=[".../overlay/DATA/FINAL/Maps/Shipping/Common.wad.client"]
+apply failed: Overlay contains unrelated map WADs ...
+```
+
+The guard now compares mount names instead of paths. `installed_mod_mounts()` collects
+the mount name (lowercased filename minus `.client`/`.wad`, mirroring
+`wad::Mounted::make_name`) of every WAD the installed mods supply, and a generated map
+WAD is only rejected when no mod supplies a WAD with that mount name. The historical
+Briar `Map11`/`Map12` leak still has no matching mod WAD and is still blocked.
+
+See [`overlay-map-wad-preflight.md`](./overlay-map-wad-preflight.md).
+
 ### Intel macOS injector hardening
 
 The x86_64 injector now:

@@ -1,5 +1,6 @@
 use crate::state::{AppState, PatcherStatus};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -254,6 +255,84 @@ mod tests {
         // A different install must not inherit the baseline.
         assert_eq!(read_baseline(&base, "/game/B"), None);
     }
+
+    #[test]
+    fn mount_name_matches_mod_tools_make_name() {
+        assert_eq!(mount_name("Common.wad.client"), "common");
+        assert_eq!(mount_name("Viego.wad.client"), "viego");
+        assert_eq!(mount_name("Map11.wad.client"), "map11");
+        assert_eq!(mount_name("Something.wad"), "something");
+    }
+
+    /// The Revenant Reign Viego case: the mod ships `Common.wad.client`, which the
+    /// game only has at `DATA/FINAL/Maps/Shipping/Common.wad.client`. The overlay
+    /// map WAD is intentional and must not be blocked.
+    #[test]
+    fn mod_supplied_map_wad_is_not_unrelated() {
+        let base = std::env::temp_dir().join("onlyskinz-preflight-supplied");
+        let _ = fs::remove_dir_all(&base);
+        let installed = base.join("installed").join("mod_0").join("WAD");
+        let overlay = base
+            .join("overlay")
+            .join("DATA")
+            .join("FINAL")
+            .join("Maps")
+            .join("Shipping");
+        fs::create_dir_all(&installed).unwrap();
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(installed.join("Common.wad.client"), b"").unwrap();
+        fs::write(overlay.join("Common.wad.client"), b"").unwrap();
+
+        let mod_mounts = installed_mod_mounts(&base.join("installed"));
+        let generated = overlay_map_wads(&base.join("overlay"));
+        assert_eq!(generated.len(), 1);
+        assert!(mod_mounts.contains(&mount_name("Common.wad.client")));
+        let unrelated: Vec<_> = generated
+            .iter()
+            .filter(|wad| {
+                Path::new(wad)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| !mod_mounts.contains(&mount_name(n)))
+                    .unwrap_or(true)
+            })
+            .collect();
+        assert!(unrelated.is_empty());
+    }
+
+    /// A leaked overlap map (the Briar Map11/Map12 case) has no matching mod WAD
+    /// and must still be flagged.
+    #[test]
+    fn leaked_overlap_map_wad_is_unrelated() {
+        let base = std::env::temp_dir().join("onlyskinz-preflight-leaked");
+        let _ = fs::remove_dir_all(&base);
+        let installed = base.join("installed").join("mod_0").join("WAD");
+        let overlay = base
+            .join("overlay")
+            .join("DATA")
+            .join("FINAL")
+            .join("Maps")
+            .join("Shipping");
+        fs::create_dir_all(&installed).unwrap();
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(installed.join("Viego.wad.client"), b"").unwrap();
+        fs::write(overlay.join("Map11.wad.client"), b"").unwrap();
+
+        let mod_mounts = installed_mod_mounts(&base.join("installed"));
+        let generated = overlay_map_wads(&base.join("overlay"));
+        assert_eq!(generated.len(), 1);
+        let unrelated: Vec<_> = generated
+            .iter()
+            .filter(|wad| {
+                Path::new(wad)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| !mod_mounts.contains(&mount_name(n)))
+                    .unwrap_or(true)
+            })
+            .collect();
+        assert_eq!(unrelated.len(), 1);
+    }
 }
 
 /// Serializes patcher setup (kill-old → import → mkoverlay → spawn → record pid).
@@ -284,26 +363,44 @@ fn diagnostic_log(path: &PathBuf, message: impl AsRef<str>) {
     }
 }
 
-fn has_map_wad(path: &PathBuf) -> bool {
+/// Mount name for a WAD filename: lowercased, with a trailing `.client` and then
+/// `.wad` stripped. Mirrors `wad::Mounted::make_name` in
+/// `mod-tools/lib/wad/mounted.hpp` so the Rust preflight and `mkoverlay` agree on
+/// which WAD a file refers to.
+fn mount_name(filename: &str) -> String {
+    let mut name = filename.to_lowercase();
+    if let Some(stripped) = name.strip_suffix(".client") {
+        name = stripped.to_string();
+    }
+    if let Some(stripped) = name.strip_suffix(".wad") {
+        name = stripped.to_string();
+    }
+    name
+}
+
+/// Mount names of every WAD the installed mods supply.
+///
+/// Imported mods are stored flattened as `installed/mod_N/WAD/<Name>.wad.client`,
+/// so the game's directory layout (and thus any `/Maps/` component) is gone by
+/// the time the preflight runs. The mount name is what survives and what
+/// `mkoverlay` matches on, so it is the only reliable way to tell whether a map
+/// WAD in the overlay was intentionally supplied by a mod.
+fn installed_mod_mounts(path: &Path) -> HashSet<String> {
+    let mut names = HashSet::new();
     let Ok(entries) = fs::read_dir(path) else {
-        return false;
+        return names;
     };
 
     for entry in entries.flatten() {
         let child = entry.path();
         if child.is_dir() {
-            if has_map_wad(&child) {
-                return true;
-            }
-        } else if child
-            .to_string_lossy()
-            .contains("/Maps/")
-        {
-            return true;
+            names.extend(installed_mod_mounts(&child));
+        } else if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
+            names.insert(mount_name(name));
         }
     }
 
-    false
+    names
 }
 
 fn overlay_map_wads(path: &PathBuf) -> Vec<String> {
@@ -686,19 +783,34 @@ fn do_apply_skins_bg(
         write_baseline(&base, &game_path, &build);
     }
 
-    let imported_map_mod = has_map_wad(&installed_dir);
+    // A map WAD in the overlay is legitimate only when a mod actually supplies
+    // that WAD. mkoverlay already drops map WADs that leak in purely through
+    // overlap propagation, so anything left that no mod supplied is unrelated
+    // (the historical Briar Map11/Map12 case) and must not be injected.
+    let mod_mounts = installed_mod_mounts(&installed_dir);
     let generated_map_wads = overlay_map_wads(&overlay_dir);
+    let unrelated_map_wads: Vec<String> = generated_map_wads
+        .iter()
+        .filter(|wad| {
+            Path::new(wad)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| !mod_mounts.contains(&mount_name(n)))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
     diagnostic_log(
         &log_path,
         format!(
-            "overlay preflight: imported_map_mod={} generated_map_wads={:?}",
-            imported_map_mod, generated_map_wads
+            "overlay preflight: mod_mounts={:?} generated_map_wads={:?} unrelated_map_wads={:?}",
+            mod_mounts, generated_map_wads, unrelated_map_wads
         ),
     );
-    if !imported_map_mod && !generated_map_wads.is_empty() {
+    if !unrelated_map_wads.is_empty() {
         return Err(format!(
             "Overlay contains unrelated map WADs; patcher was not started: {:?}",
-            generated_map_wads
+            unrelated_map_wads
         ));
     }
 

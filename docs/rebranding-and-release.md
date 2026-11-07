@@ -15,7 +15,7 @@ bundle metadata were renamed freely.
 | Bundle identifier | `com.onlyleague.onlyskinz` |
 | Executable | `onlyskinz` |
 | Rust lib crate | `onlyskinz_lib` |
-| Version | `0.1.12` |
+| Version | `0.1.13` |
 | Repo | `github.com/onlyleague/onlyskinz` |
 
 Declared in `src-tauri/tauri.conf.json` (`productName`, `identifier`, `version`)
